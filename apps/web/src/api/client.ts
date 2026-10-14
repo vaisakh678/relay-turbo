@@ -1,6 +1,8 @@
 import type { APIResponse } from '@repo/dto'
 
 export const API_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:3001/api/v1'
+/** Gateway origin, for the SDK (which appends /api/v1/chat itself). */
+export const API_ORIGIN = API_URL.replace(/\/api\/v1\/?$/, '')
 
 export class ApiError extends Error {
   readonly status: number

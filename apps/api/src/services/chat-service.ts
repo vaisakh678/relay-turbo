@@ -6,7 +6,7 @@ import { BadRequest, Forbidden, ServiceUnavailable, TooManyRequests } from "../l
 import type { RelayEvent } from "../lib/events";
 import { nextUtcDay, renderTemplate, startOfUtcDay } from "../lib/helpers";
 import { logger } from "../lib/logger";
-import { createModel } from "../lib/models";
+import { createModel, providerOptionsFor } from "../lib/models";
 import { costMicros, isPricedModel } from "../lib/pricing";
 import type { ChatRequest } from "../lib/validators";
 import { sendWebhook } from "../lib/webhook";
@@ -121,6 +121,7 @@ export async function runChat(
       messages: chat.messages,
       temperature: app.temperature,
       maxOutputTokens: limit.maxOutputTokens,
+      providerOptions: providerOptionsFor(app.provider, app.model),
       abortSignal: signal,
     });
 

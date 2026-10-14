@@ -3,7 +3,8 @@ import type { Provider } from '@repo/dto'
 export const MODELS: Record<Provider, string[]> = {
   anthropic: ['claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5'],
   openai: ['gpt-5', 'gpt-5-mini'],
-  google: ['gemini-2.5-pro', 'gemini-2.5-flash'],
+  // From Google's models API (Oct 2026); gemini-2.5-* is closed to new users
+  google: ['gemini-3.8-flash', 'gemini-flash-latest', 'gemini-3.1-pro-preview', 'gemini-pro-latest'],
 }
 
 // $ per 1M tokens [input, output] — mirrors apps/api/src/lib/pricing.ts

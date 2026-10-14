@@ -100,7 +100,7 @@ const APPS: SeedApp[] = [
     emoji: "🏊",
     status: "live",
     provider: "google",
-    model: "gemini-2.5-flash",
+    model: "gemini-3.8-flash",
     temperature: 0.3,
     prompts: [
       {
