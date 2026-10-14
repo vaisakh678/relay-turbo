@@ -2,6 +2,7 @@ import { sql } from "drizzle-orm";
 import {
   boolean,
   check,
+  index,
   integer,
   pgTable,
   real,
@@ -12,6 +13,7 @@ import {
 } from "drizzle-orm/pg-core";
 
 import { appStatusEnum, providerEnum } from "./enums";
+import { workspaceSchema } from "./auth";
 import { createdAt, id, updatedAt } from "./helpers";
 
 // One connected client app (e.g. Luna Stories). Holds the model config and
@@ -20,6 +22,9 @@ export const appSchema = pgTable(
   "apps",
   {
     id: id(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaceSchema.id, { onDelete: "cascade" }),
     name: text("name").notNull(),
     // Public identifier used in tokens and the chat API ("luna-stories").
     slug: text("slug").notNull(),
@@ -46,8 +51,11 @@ export const appSchema = pgTable(
     deletedAt: timestamp("deleted_at", { withTimezone: true }),
   },
   (t) => [
-    // Slugs are unique among non-deleted apps, so a deleted slug can be reused.
+    // Slugs are globally unique among non-deleted apps (chat tokens name the
+    // app by slug), so a deleted slug can be reused.
     uniqueIndex("apps_slug_key").on(t.slug).where(sql`${t.deletedAt} is null`),
+    // Listing a workspace's apps; also covers the FK.
+    index("apps_workspace_created_idx").on(t.workspaceId, t.createdAt),
     check("apps_temperature_range", sql`${t.temperature} between 0 and 2`),
   ],
 );

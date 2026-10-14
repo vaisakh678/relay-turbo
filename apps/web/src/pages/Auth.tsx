@@ -1,6 +1,9 @@
-import { ArrowRight, Eye, EyeOff, Loader2 } from 'lucide-react'
+import { useQuery } from '@tanstack/react-query'
+import { ArrowRight, Loader2 } from 'lucide-react'
 import { useEffect, useState, type ReactNode } from 'react'
-import { Link, useNavigate } from 'react-router'
+import { Link, useNavigate, useSearchParams } from 'react-router'
+import { api } from '../api/client'
+import { authClient } from '../lib/auth-client'
 import { Button, Field, Input } from '../components/ui'
 import { cn } from '../lib/cn'
 
@@ -167,22 +170,82 @@ function OAuthButton({ icon, label, loading, disabled, onClick }: { icon: ReactN
   )
 }
 
+type AuthConfig = { emailOtp: boolean; google: boolean; github: boolean }
+
+const ERROR_MESSAGES: Record<string, string> = {
+  account_not_linked: 'That email already has an account with a different sign-in method.',
+  access_denied: 'Sign-in was cancelled.',
+  state_mismatch: 'Your sign-in session expired. Please try again.',
+}
+
 function AuthPage({ mode }: { mode: Mode }) {
   const navigate = useNavigate()
+  const [params] = useSearchParams()
+  const session = authClient.useSession()
+  const config = useQuery({
+    queryKey: ['auth-config'],
+    queryFn: () => api<AuthConfig>('/auth-config'),
+    staleTime: Infinity,
+  })
   const [pending, setPending] = useState<Pending>(null)
-  const [showPassword, setShowPassword] = useState(false)
+  const [step, setStep] = useState<'email' | 'code'>('email')
   const [name, setName] = useState('')
   const [email, setEmail] = useState('')
-  const [password, setPassword] = useState('')
-  const [error, setError] = useState('')
+  const [code, setCode] = useState('')
+  const [error, setError] = useState(() => {
+    const e = params.get('error')
+    return e ? (ERROR_MESSAGES[e] ?? `Sign-in failed (${e.replace(/_/g, ' ')})`) : ''
+  })
   const signup = mode === 'signup'
+  const next = params.get('next') || '/'
 
-  // UI only: fake the round-trip, then land on the dashboard
-  function start(kind: Exclude<Pending, null>) {
+  // Already signed in (e.g. back button after login): go to the app
+  useEffect(() => {
+    if (session.data) navigate(next, { replace: true })
+  }, [session.data, navigate, next])
+
+  async function social(provider: 'google' | 'github') {
     setError('')
-    setPending(kind)
-    setTimeout(() => navigate('/'), 900)
+    setPending(provider)
+    const { error } = await authClient.signIn.social({
+      provider,
+      callbackURL: `${window.location.origin}${next}`,
+      errorCallbackURL: `${window.location.origin}/login`,
+    })
+    // On success the browser is already leaving for the provider
+    if (error) {
+      setError(error.message ?? 'Could not start sign-in')
+      setPending(null)
+    }
   }
+
+  async function sendCode() {
+    setError('')
+    setPending('email')
+    const { error } = await authClient.emailOtp.sendVerificationOtp({ email: email.trim(), type: 'sign-in' })
+    setPending(null)
+    if (error) return setError(error.message ?? 'Could not send the code')
+    setStep('code')
+  }
+
+  async function verifyCode() {
+    setError('')
+    setPending('email')
+    const { error } = await authClient.signIn.emailOtp({
+      email: email.trim(),
+      otp: code.trim(),
+      ...(signup && name.trim() ? { name: name.trim() } : {}),
+    })
+    setPending(null)
+    if (error) {
+      setCode('')
+      return setError(error.code === 'INVALID_OTP' ? 'That code is wrong or expired.' : (error.message ?? 'Sign-in failed'))
+    }
+    navigate(next, { replace: true })
+  }
+
+  const providers = config.data
+  const anySocial = providers?.google || providers?.github
 
   return (
     <div className="grid min-h-full lg:grid-cols-2">
@@ -194,87 +257,112 @@ function AuthPage({ mode }: { mode: Mode }) {
             {signup ? 'Connect your first app in under five minutes.' : 'Sign in to manage your apps and streams.'}
           </p>
 
-          <div className="mt-8 grid gap-2.5">
-            <OAuthButton
-              icon={<GoogleIcon />}
-              label="Continue with Google"
-              loading={pending === 'google'}
-              disabled={pending !== null}
-              onClick={() => start('google')}
-            />
-            <OAuthButton
-              icon={<GitHubIcon />}
-              label="Continue with GitHub"
-              loading={pending === 'github'}
-              disabled={pending !== null}
-              onClick={() => start('github')}
-            />
-          </div>
-
-          <div className="my-6 flex items-center gap-3 text-xs text-faint">
-            <span className="h-px flex-1 bg-line" />
-            or with email
-            <span className="h-px flex-1 bg-line" />
-          </div>
-
-          <form
-            className="space-y-4"
-            onSubmit={(e) => {
-              e.preventDefault()
-              if (signup && password.length < 8) return setError('Password must be at least 8 characters.')
-              start('email')
-            }}
-          >
-            {signup && (
-              <Field label="Name">
-                <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Ada Lovelace" autoComplete="name" required className="h-10" />
-              </Field>
-            )}
-            <Field label="Email">
-              <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@company.com" autoComplete="email" required className="h-10" />
-            </Field>
-            <div>
-              <div className="mb-1.5 flex items-center justify-between">
-                <label htmlFor="password" className="text-xs font-medium text-muted">
-                  Password
-                </label>
-                {!signup && (
-                  <a href="#" className="text-xs text-muted hover:text-fg">
-                    Forgot password?
-                  </a>
+          {anySocial && (
+            <>
+              <div className="mt-8 grid gap-2.5">
+                {providers.google && (
+                  <OAuthButton
+                    icon={<GoogleIcon />}
+                    label="Continue with Google"
+                    loading={pending === 'google'}
+                    disabled={pending !== null}
+                    onClick={() => social('google')}
+                  />
+                )}
+                {providers.github && (
+                  <OAuthButton
+                    icon={<GitHubIcon />}
+                    label="Continue with GitHub"
+                    loading={pending === 'github'}
+                    disabled={pending !== null}
+                    onClick={() => social('github')}
+                  />
                 )}
               </div>
-              <div className="relative">
+              <div className="my-6 flex items-center gap-3 text-xs text-faint">
+                <span className="h-px flex-1 bg-line" />
+                or with email
+                <span className="h-px flex-1 bg-line" />
+              </div>
+            </>
+          )}
+
+          {step === 'email' ? (
+            <form
+              className={cn('space-y-4', !anySocial && 'mt-8')}
+              onSubmit={(e) => {
+                e.preventDefault()
+                void sendCode()
+              }}
+            >
+              {signup && (
+                <Field label="Name">
+                  <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Ada Lovelace" autoComplete="name" className="h-10" />
+                </Field>
+              )}
+              <Field label="Email">
                 <Input
-                  id="password"
-                  type={showPassword ? 'text' : 'password'}
-                  value={password}
-                  onChange={(e) => {
-                    setPassword(e.target.value)
-                    setError('')
-                  }}
-                  placeholder={signup ? 'At least 8 characters' : '••••••••'}
-                  autoComplete={signup ? 'new-password' : 'current-password'}
+                  type="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  placeholder="you@company.com"
+                  autoComplete="email"
                   required
-                  className={cn('h-10 pr-10', error && 'border-danger/60')}
+                  className="h-10"
                 />
+              </Field>
+              {error && <p className="text-xs text-danger">{error}</p>}
+              <Button type="submit" variant="primary" disabled={pending !== null || !email.trim()} className="h-10 w-full">
+                {pending === 'email' ? <Loader2 className="size-4 animate-spin" /> : null}
+                Email me a sign-in code
+                {pending !== 'email' && <ArrowRight className="size-4" />}
+              </Button>
+            </form>
+          ) : (
+            <form
+              className={cn('space-y-4', !anySocial && 'mt-8')}
+              onSubmit={(e) => {
+                e.preventDefault()
+                void verifyCode()
+              }}
+            >
+              <p className="text-sm text-muted">
+                We sent a 6-digit code to <span className="text-fg">{email}</span>. It expires in 5 minutes.
+              </p>
+              <Field label="Code">
+                <Input
+                  value={code}
+                  onChange={(e) => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                  inputMode="numeric"
+                  autoComplete="one-time-code"
+                  autoFocus
+                  placeholder="123456"
+                  className="h-11 text-center font-mono text-lg tracking-[0.5em]"
+                />
+              </Field>
+              {error && <p className="text-xs text-danger">{error}</p>}
+              <Button type="submit" variant="primary" disabled={pending !== null || code.length !== 6} className="h-10 w-full">
+                {pending === 'email' ? <Loader2 className="size-4 animate-spin" /> : null}
+                {signup ? 'Create account' : 'Sign in'}
+              </Button>
+              <div className="flex justify-between text-xs">
                 <button
                   type="button"
-                  onClick={() => setShowPassword(!showPassword)}
-                  className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded-md p-1.5 text-faint hover:text-fg"
-                  aria-label={showPassword ? 'Hide password' : 'Show password'}
+                  onClick={() => {
+                    setStep('email')
+                    setCode('')
+                    setError('')
+                  }}
+                  className="text-muted hover:text-fg"
                 >
-                  {showPassword ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
+                  ← Use a different email
+                </button>
+                <button type="button" onClick={() => void sendCode()} disabled={pending !== null} className="text-muted hover:text-fg">
+                  Resend code
                 </button>
               </div>
-              {error && <p className="mt-1.5 text-xs text-danger">{error}</p>}
-            </div>
-            <Button type="submit" variant="primary" disabled={pending !== null} className="h-10 w-full">
-              {pending === 'email' ? <Loader2 className="size-4 animate-spin" /> : null}
-              {signup ? 'Create account' : 'Sign in'}
-              {pending !== 'email' && <ArrowRight className="size-4" />}
-            </Button>
-          </form>
+            </form>
+          )}
 
           <p className="mt-6 text-center text-sm text-muted">
             {signup ? 'Already have an account? ' : "Don't have an account? "}

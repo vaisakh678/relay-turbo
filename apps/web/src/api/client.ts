@@ -23,6 +23,8 @@ export async function api<T>(path: string, init?: RequestInit & { json?: unknown
   try {
     res = await fetch(`${API_URL}${path}`, {
       ...rest,
+      // Dashboard routes are authenticated by the Better Auth session cookie
+      credentials: 'include',
       headers: { ...(json !== undefined && { 'Content-Type': 'application/json' }), ...rest.headers },
       body: json !== undefined ? JSON.stringify(json) : rest.body,
     })

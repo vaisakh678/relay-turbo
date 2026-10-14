@@ -31,12 +31,12 @@ function limitToDTO(row: PlanLimitRow): PlanLimitDTO {
   return { plan: row.plan, messagesPerDay: row.messagesPerDay, maxOutputTokens: row.maxOutputTokens };
 }
 
-/** Load a non-deleted app by ID or throw 404. */
-export async function requireApp(appId: string): Promise<AppRow> {
+/** Load a non-deleted app in this workspace or throw 404 (also 404 for other workspaces' apps). */
+export async function requireApp(workspaceId: string, appId: string): Promise<AppRow> {
   const [row] = await db
     .select()
     .from(appSchema)
-    .where(and(eq(appSchema.id, appId), isNull(appSchema.deletedAt)))
+    .where(and(eq(appSchema.id, appId), eq(appSchema.workspaceId, workspaceId), isNull(appSchema.deletedAt)))
     .limit(1);
   if (!row) throw NotFound("App not found");
   return row;
@@ -51,13 +51,17 @@ export async function findAppBySlug(slug: string): Promise<AppRow | undefined> {
   return row;
 }
 
-export async function listApps(): Promise<AppDTO[]> {
-  const rows = await db.select().from(appSchema).where(isNull(appSchema.deletedAt)).orderBy(asc(appSchema.createdAt));
+export async function listApps(workspaceId: string): Promise<AppDTO[]> {
+  const rows = await db
+    .select()
+    .from(appSchema)
+    .where(and(eq(appSchema.workspaceId, workspaceId), isNull(appSchema.deletedAt)))
+    .orderBy(asc(appSchema.createdAt));
   return rows.map(appToDTO);
 }
 
-export async function getApp(appId: string): Promise<AppDetailDTO> {
-  const app = await requireApp(appId);
+export async function getApp(workspaceId: string, appId: string): Promise<AppDetailDTO> {
+  const app = await requireApp(workspaceId, appId);
   const [prompts, limits] = await Promise.all([
     db
       .select()
@@ -69,7 +73,7 @@ export async function getApp(appId: string): Promise<AppDetailDTO> {
   return { ...appToDTO(app), prompts: prompts.map(promptToDTO), limits: limits.map(limitToDTO) };
 }
 
-export async function createApp(input: CreateAppInput): Promise<AppDetailDTO> {
+export async function createApp(workspaceId: string, input: CreateAppInput): Promise<AppDetailDTO> {
   const slug = input.slug ?? slugify(input.name);
   if (await findAppBySlug(slug)) throw Conflict(`An app with slug "${slug}" already exists`);
 
@@ -77,6 +81,7 @@ export async function createApp(input: CreateAppInput): Promise<AppDetailDTO> {
     const [row] = await tx
       .insert(appSchema)
       .values({
+        workspaceId,
         name: input.name,
         slug,
         emoji: input.emoji,
@@ -101,36 +106,36 @@ export async function createApp(input: CreateAppInput): Promise<AppDetailDTO> {
     return row!.id;
   });
 
-  return getApp(appId);
+  return getApp(workspaceId, appId);
 }
 
-export async function updateApp(appId: string, input: UpdateAppInput): Promise<AppDTO> {
-  await requireApp(appId);
+export async function updateApp(workspaceId: string, appId: string, input: UpdateAppInput): Promise<AppDTO> {
+  await requireApp(workspaceId, appId);
   const [row] = await db.update(appSchema).set(input).where(eq(appSchema.id, appId)).returning();
   return appToDTO(row!);
 }
 
 /** Soft delete; frees the slug for reuse (partial unique index). */
-export async function deleteApp(appId: string): Promise<void> {
-  await requireApp(appId);
+export async function deleteApp(workspaceId: string, appId: string): Promise<void> {
+  await requireApp(workspaceId, appId);
   await db.update(appSchema).set({ deletedAt: new Date() }).where(eq(appSchema.id, appId));
 }
 
 /** Returns the full secret, unlike every other endpoint. Only the dashboard's "reveal"/"copy" should call this. */
-export async function revealSigningSecret(appId: string): Promise<string> {
-  return (await requireApp(appId)).signingSecret;
+export async function revealSigningSecret(workspaceId: string, appId: string): Promise<string> {
+  return (await requireApp(workspaceId, appId)).signingSecret;
 }
 
-export async function rotateSigningSecret(appId: string): Promise<string> {
-  await requireApp(appId);
+export async function rotateSigningSecret(workspaceId: string, appId: string): Promise<string> {
+  await requireApp(workspaceId, appId);
   const signingSecret = generateSigningSecret();
   await db.update(appSchema).set({ signingSecret }).where(eq(appSchema.id, appId));
   return signingSecret;
 }
 
 /** Insert the next prompt version and make it live, atomically. */
-export async function publishPrompt(appId: string, input: PublishPromptInput): Promise<PromptVersionDTO> {
-  await requireApp(appId);
+export async function publishPrompt(workspaceId: string, appId: string, input: PublishPromptInput): Promise<PromptVersionDTO> {
+  await requireApp(workspaceId, appId);
   return db.transaction(async (tx) => {
     // Lock the app row so two concurrent publishes can't pick the same version number.
     await tx.select({ id: appSchema.id }).from(appSchema).where(eq(appSchema.id, appId)).for("update");
@@ -149,8 +154,8 @@ export async function publishPrompt(appId: string, input: PublishPromptInput): P
 }
 
 /** Roll back (or forward) to an existing version. */
-export async function activatePromptVersion(appId: string, version: number): Promise<void> {
-  await requireApp(appId);
+export async function activatePromptVersion(workspaceId: string, appId: string, version: number): Promise<void> {
+  await requireApp(workspaceId, appId);
   const [exists] = await db
     .select({ id: promptVersionSchema.id })
     .from(promptVersionSchema)
@@ -170,8 +175,8 @@ export async function getActivePrompt(app: AppRow): Promise<PromptVersionRow | u
 }
 
 /** Replace the app's whole set of plan limits (the dashboard edits them as one table). */
-export async function replaceLimits(appId: string, limits: PlanLimitInput[]): Promise<PlanLimitDTO[]> {
-  await requireApp(appId);
+export async function replaceLimits(workspaceId: string, appId: string, limits: PlanLimitInput[]): Promise<PlanLimitDTO[]> {
+  await requireApp(workspaceId, appId);
   await db.transaction(async (tx) => {
     await tx.delete(planLimitSchema).where(eq(planLimitSchema.appId, appId));
     if (limits.length) await tx.insert(planLimitSchema).values(limits.map((l) => ({ appId, ...l })));

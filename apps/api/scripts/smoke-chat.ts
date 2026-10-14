@@ -81,8 +81,11 @@ async function main() {
   await new Promise<void>((r) => server.listen(0, r));
   const webhookUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}/hook`;
 
-  const hadKey = (await db.select().from(providerKeySchema).where(eq(providerKeySchema.provider, app.provider))).length > 0;
-  if (!hadKey) await db.insert(providerKeySchema).values({ provider: app.provider, apiKey: "smoke-test-placeholder-key" });
+  const keyOf = and(eq(providerKeySchema.workspaceId, app.workspaceId), eq(providerKeySchema.provider, app.provider));
+  const hadKey = (await db.select().from(providerKeySchema).where(keyOf)).length > 0;
+  if (!hadKey) {
+    await db.insert(providerKeySchema).values({ workspaceId: app.workspaceId, provider: app.provider, apiKey: "smoke-test-placeholder-key" });
+  }
   await db.update(appSchema).set({ webhookUrl, allowTestTokens: false }).where(eq(appSchema.id, app.id));
 
   try {
@@ -105,10 +108,10 @@ async function main() {
     const tooLong = await signToken(app.signingSecret, { app: app.slug, sub: user, plan: "free" }, inMinutes(48 * 60));
     await expectStatus(401, () => authenticateChat(bearer(tooLong)), "live token living 48h");
 
-    const pg = await createPlaygroundToken(app.id, { user, plan: "free", vars: {} });
+    const pg = await createPlaygroundToken(app.workspaceId, app.id, { user, plan: "free", vars: {} });
     check((await authenticateChat(bearer(pg.token))).kind === "playground", "playground token accepted while test tokens are disabled");
 
-    const { token: testToken, testToken: testMeta } = await createTestToken(app.id, {
+    const { token: testToken, testToken: testMeta } = await createTestToken(app.workspaceId, app.id, {
       label: "smoke",
       user,
       plan: "free",
@@ -119,7 +122,7 @@ async function main() {
     await db.update(appSchema).set({ allowTestTokens: true }).where(eq(appSchema.id, app.id));
     const testAuth = await authenticateChat(bearer(testToken));
     check(testAuth.kind === "test" && testAuth.testTokenId === testMeta.id, "test token accepted once enabled");
-    await revokeTestToken(app.id, testMeta.id);
+    await revokeTestToken(app.workspaceId, app.id, testMeta.id);
     await expectStatus(401, () => authenticateChat(bearer(testToken)), "revoked test token");
 
     console.log("— stream");
@@ -155,7 +158,7 @@ async function main() {
     }
 
     // Fill today's test-token cap with synthetic rows, then a fresh test token is refused
-    const { token: t2, testToken: t2Meta } = await createTestToken(app.id, { label: "cap", user: `${user}_cap`, plan: "pro", vars: {}, expiresIn: "1h" });
+    const { token: t2, testToken: t2Meta } = await createTestToken(app.workspaceId, app.id, { label: "cap", user: `${user}_cap`, plan: "pro", vars: {}, expiresIn: "1h" });
     await db.insert(requestLogSchema).values(
       Array.from({ length: TEST_TOKEN_DAILY_CAP }, () => ({
         appId: app.id,
@@ -180,7 +183,7 @@ async function main() {
     await db.delete(requestLogSchema).where(and(eq(requestLogSchema.appId, app.id), gte(requestLogSchema.createdAt, startedAt)));
     await db.delete(testTokenSchema).where(and(eq(testTokenSchema.appId, app.id), gte(testTokenSchema.createdAt, startedAt)));
     await db.update(appSchema).set({ webhookUrl: app.webhookUrl, allowTestTokens: app.allowTestTokens }).where(eq(appSchema.id, app.id));
-    if (!hadKey) await db.delete(providerKeySchema).where(eq(providerKeySchema.provider, app.provider));
+    if (!hadKey) await db.delete(providerKeySchema).where(keyOf);
     server.close();
     await pool.end();
   }

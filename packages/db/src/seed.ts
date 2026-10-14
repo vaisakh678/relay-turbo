@@ -11,10 +11,11 @@ import {
   planLimitSchema,
   promptVersionSchema,
   providerKeySchema,
+  workspaceSchema,
   type NewAppRow,
 } from "./schema";
 
-type SeedApp = Omit<NewAppRow, "signingSecret" | "activePromptVersion"> & {
+type SeedApp = Omit<NewAppRow, "signingSecret" | "activePromptVersion" | "workspaceId"> & {
   prompts: { content: string; note: string }[];
   limits?: { plan: string; messagesPerDay: number; maxOutputTokens: number }[];
 };
@@ -118,7 +119,16 @@ const PROVIDER_ENV = {
   google: "GOOGLE_GENERATIVE_AI_API_KEY",
 } as const;
 
+/** Seed data lives in the "Default workspace"; the first user to sign up becomes its owner. */
+async function defaultWorkspaceId(): Promise<string> {
+  const [existing] = await db.select({ id: workspaceSchema.id }).from(workspaceSchema).where(eq(workspaceSchema.slug, "default"));
+  if (existing) return existing.id;
+  const [created] = await db.insert(workspaceSchema).values({ name: "Default workspace", slug: "default" }).returning({ id: workspaceSchema.id });
+  return created!.id;
+}
+
 async function seed() {
+  const workspaceId = await defaultWorkspaceId();
   for (const { prompts, limits = DEFAULT_LIMITS, ...app } of APPS) {
     const [existing] = await db
       .select({ id: appSchema.id })
@@ -135,6 +145,7 @@ async function seed() {
         .insert(appSchema)
         .values({
           ...app,
+          workspaceId,
           signingSecret: `rls_live_${randomBytes(16).toString("hex")}`,
           activePromptVersion: prompts.length,
         })
@@ -153,8 +164,8 @@ async function seed() {
     if (!apiKey) continue;
     await db
       .insert(providerKeySchema)
-      .values({ provider, apiKey })
-      .onConflictDoUpdate({ target: providerKeySchema.provider, set: { apiKey } });
+      .values({ workspaceId, provider, apiKey })
+      .onConflictDoUpdate({ target: [providerKeySchema.workspaceId, providerKeySchema.provider], set: { apiKey } });
     console.log(`key   ${provider} (from ${envVar})`);
   }
 }
