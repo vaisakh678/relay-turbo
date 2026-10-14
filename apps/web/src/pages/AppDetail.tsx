@@ -1,12 +1,13 @@
 import type { AppDetailDTO, PlanLimitDTO, Provider } from '@repo/dto'
-import { ArrowLeft, Eye, EyeOff, FlaskConical, History, Pause, Play, RefreshCw, RotateCcw, Save, Upload } from 'lucide-react'
+import { ArrowLeft, Eye, EyeOff, FlaskConical, History, Pause, Play, RefreshCw, RotateCcw, Save, Trash2, Upload } from 'lucide-react'
 import { useState } from 'react'
-import { Link, useParams } from 'react-router'
+import { Link, useNavigate, useParams } from 'react-router'
 import { API_URL, ApiError } from '../api/client'
 import {
   fetchSigningSecret,
   useActivateVersion,
   useApp,
+  useDeleteApp,
   useProviderKeys,
   usePublishPrompt,
   useReplaceLimits,
@@ -32,11 +33,12 @@ import {
   Textarea,
 } from '../components/ui'
 import { cn } from '../lib/cn'
+import { APP_EMOJIS } from '../lib/emojis'
 import { timeAgo } from '../lib/format'
 import { MODELS, PRICING } from '../lib/models'
 import { NotFound } from './NotFound'
 
-type Tab = 'prompt' | 'model' | 'limits' | 'integration'
+type Tab = 'prompt' | 'model' | 'limits' | 'integration' | 'settings'
 
 function variablesIn(text: string) {
   return [...new Set([...text.matchAll(/\{\{\s*(\w+)\s*\}\}/g)].map((m) => m[1]!))]
@@ -396,6 +398,104 @@ export function verifyRelayWebhook(body: string, headers: Record<string, string>
   )
 }
 
+function SettingsTab({ app }: { app: AppDetailDTO }) {
+  const update = useUpdateApp(app.id)
+  const deleteApp = useDeleteApp(app.id)
+  const navigate = useNavigate()
+  const [name, setName] = useState(app.name)
+  const [emoji, setEmoji] = useState(app.emoji)
+  const [confirmSlug, setConfirmSlug] = useState('')
+  const dirty = name.trim() !== app.name || emoji !== app.emoji
+  // Keep the app's current emoji pickable even if it isn't one of the presets
+  const emojis = APP_EMOJIS.includes(app.emoji) ? APP_EMOJIS : [app.emoji, ...APP_EMOJIS]
+
+  return (
+    <div className="max-w-2xl space-y-6">
+      <Card>
+        <CardHeader title="General" />
+        <form
+          className="space-y-4 p-5"
+          onSubmit={(e) => {
+            e.preventDefault()
+            if (dirty && name.trim()) update.mutate({ name: name.trim(), emoji })
+          }}
+        >
+          <Field label="Name" hint={<>Display name only. The slug <code className="font-mono">{app.slug}</code> stays the same, so existing clients keep working.</>}>
+            <Input value={name} onChange={(e) => setName(e.target.value)} maxLength={80} />
+          </Field>
+          <Field label="Icon">
+            <div className="flex flex-wrap gap-1.5">
+              {emojis.map((e) => (
+                <button
+                  type="button"
+                  key={e}
+                  onClick={() => setEmoji(e)}
+                  className={cn(
+                    'flex size-9 items-center justify-center rounded-lg border text-lg',
+                    emoji === e ? 'border-accent bg-accent/10' : 'border-line-strong bg-bg hover:bg-panel-2',
+                  )}
+                >
+                  {e}
+                </button>
+              ))}
+            </div>
+          </Field>
+          <InlineError error={update.error} />
+          <div className="flex justify-end gap-2">
+            <Button
+              type="button"
+              variant="ghost"
+              disabled={!dirty}
+              onClick={() => {
+                setName(app.name)
+                setEmoji(app.emoji)
+              }}
+            >
+              Reset
+            </Button>
+            <Button type="submit" variant="primary" disabled={!dirty || !name.trim() || update.isPending}>
+              <Save className="size-4" /> {update.isPending ? 'Saving…' : 'Save'}
+            </Button>
+          </div>
+        </form>
+      </Card>
+
+      <div className="rounded-xl border border-danger/40 bg-danger/[0.03]">
+        <div className="border-b border-danger/30 px-5 py-4">
+          <h2 className="text-sm font-medium text-danger">Danger zone</h2>
+        </div>
+        <div className="space-y-4 p-5">
+          <div>
+            <h3 className="text-sm font-medium">Delete this app</h3>
+            <p className="mt-1 text-xs leading-relaxed text-muted">
+              Streams for <code className="font-mono">{app.slug}</code> stop immediately and the app disappears from the dashboard.
+              Its request logs are kept. The slug becomes free to reuse.
+            </p>
+          </div>
+          <Field label={`Type ${app.slug} to confirm`}>
+            <Input
+              value={confirmSlug}
+              onChange={(e) => setConfirmSlug(e.target.value)}
+              placeholder={app.slug}
+              autoComplete="off"
+              spellCheck={false}
+              className="font-mono"
+            />
+          </Field>
+          <InlineError error={deleteApp.error} />
+          <Button
+            variant="danger"
+            disabled={confirmSlug !== app.slug || deleteApp.isPending}
+            onClick={() => deleteApp.mutate(undefined, { onSuccess: () => navigate('/apps', { replace: true }) })}
+          >
+            <Trash2 className="size-4" /> {deleteApp.isPending ? 'Deleting…' : 'Delete app'}
+          </Button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export function AppDetail() {
   const { appId = '' } = useParams()
   const app = useApp(appId)
@@ -443,6 +543,7 @@ export function AppDetail() {
           { id: 'model', label: 'Model' },
           { id: 'limits', label: 'Limits' },
           { id: 'integration', label: 'Integration' },
+          { id: 'settings', label: 'Settings' },
         ]}
       />
       {/* Keyed by app so local drafts reset when navigating between apps */}
@@ -450,6 +551,7 @@ export function AppDetail() {
       {tab === 'model' && <ModelTab key={`${app.data.id}-${app.data.temperature}`} app={app.data} />}
       {tab === 'limits' && <LimitsTab key={app.data.id} app={app.data} />}
       {tab === 'integration' && <IntegrationTab key={app.data.id} app={app.data} />}
+      {tab === 'settings' && <SettingsTab key={app.data.id} app={app.data} />}
     </>
   )
 }

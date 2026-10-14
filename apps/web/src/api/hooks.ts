@@ -153,3 +153,14 @@ export const useHealth = () =>
     refetchInterval: 30_000,
     retry: false,
   })
+
+export function useDeleteApp(id: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: () => api<{ id: string }>(`/apps/${id}`, { method: 'DELETE' }),
+    onSuccess: () => {
+      qc.removeQueries({ queryKey: keys.app(id) })
+      return qc.invalidateQueries({ queryKey: keys.apps() })
+    },
+  })
+}
