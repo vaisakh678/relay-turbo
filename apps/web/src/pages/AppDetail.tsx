@@ -1,6 +1,18 @@
-import { ArrowLeft, Eye, EyeOff, FlaskConical, History, Pause, Play, RefreshCw, RotateCcw, Upload } from 'lucide-react'
+import type { AppDetailDTO, PlanLimitDTO, Provider } from '@repo/dto'
+import { ArrowLeft, Eye, EyeOff, FlaskConical, History, Pause, Play, RefreshCw, RotateCcw, Save, Upload } from 'lucide-react'
 import { useState } from 'react'
 import { Link, useParams } from 'react-router'
+import { API_URL, ApiError } from '../api/client'
+import {
+  fetchSigningSecret,
+  useActivateVersion,
+  useApp,
+  useProviderKeys,
+  usePublishPrompt,
+  useReplaceLimits,
+  useRotateSecret,
+  useUpdateApp,
+} from '../api/hooks'
 import {
   Badge,
   Button,
@@ -9,35 +21,37 @@ import {
   CodeBlock,
   CopyButton,
   Field,
+  InlineError,
   Input,
+  Loading,
   PageHeader,
+  QueryError,
   Select,
   StatusDot,
   Tabs,
   Textarea,
 } from '../components/ui'
-import { MODELS, PRICING } from '../data/mock'
-import { useStore } from '../data/store'
-import type { PlanLimit, Provider, RelayApp } from '../data/types'
 import { cn } from '../lib/cn'
-import { mask, timeAgo } from '../lib/format'
+import { timeAgo } from '../lib/format'
+import { MODELS, PRICING } from '../lib/models'
 import { NotFound } from './NotFound'
 
 type Tab = 'prompt' | 'model' | 'limits' | 'integration'
 
 function variablesIn(text: string) {
-  return [...new Set([...text.matchAll(/\{\{\s*(\w+)\s*\}\}/g)].map((m) => m[1]))]
+  return [...new Set([...text.matchAll(/\{\{\s*(\w+)\s*\}\}/g)].map((m) => m[1]!))]
 }
 
-function PromptTab({ app }: { app: RelayApp }) {
-  const { publishPrompt, activateVersion } = useStore()
-  const active = app.prompts.find((p) => p.version === app.activeVersion) ?? app.prompts[0]
-  const [draft, setDraft] = useState(active.content)
+function PromptTab({ app }: { app: AppDetailDTO }) {
+  const publish = usePublishPrompt(app.id)
+  const activate = useActivateVersion(app.id)
+  const active = app.prompts.find((p) => p.version === app.activePromptVersion) ?? app.prompts[0]
+  const [draft, setDraft] = useState(active?.content ?? '')
   const [note, setNote] = useState('')
   const [viewing, setViewing] = useState<number | null>(null)
-  const dirty = draft !== active.content
+  const dirty = draft !== active?.content
   const vars = variablesIn(draft)
-  const viewed = app.prompts.find((p) => p.version === viewing)
+  const nextVersion = Math.max(0, ...app.prompts.map((p) => p.version)) + 1
 
   return (
     <div className="grid gap-6 lg:grid-cols-3">
@@ -45,16 +59,10 @@ function PromptTab({ app }: { app: RelayApp }) {
         <CardHeader
           title="System prompt"
           description="Lives on Relay, never in your app binary. Publishing takes effect on the next request."
-          actions={dirty ? <Badge tone="warn">unpublished changes</Badge> : <Badge tone="success">v{active.version} live</Badge>}
+          actions={dirty ? <Badge tone="warn">unpublished changes</Badge> : <Badge tone="success">v{active?.version} live</Badge>}
         />
         <div className="p-5">
-          <Textarea
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            rows={14}
-            spellCheck={false}
-            className="font-mono text-[13px]"
-          />
+          <Textarea value={draft} onChange={(e) => setDraft(e.target.value)} rows={14} spellCheck={false} className="font-mono text-[13px]" />
           <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-muted">
             <span>Variables:</span>
             {vars.length ? (
@@ -64,14 +72,14 @@ function PromptTab({ app }: { app: RelayApp }) {
                 </code>
               ))
             ) : (
-              <span className="text-faint">none. Use {'{{name}}'} to inject values from your Lambda.</span>
+              <span className="text-faint">none. Use {'{{name}}'} to inject values per request.</span>
             )}
             <span className="ml-auto tabular-nums text-faint">≈ {Math.ceil(draft.length / 4)} tokens</span>
           </div>
           <div className="mt-5 flex flex-col gap-2 border-t border-line pt-5 sm:flex-row">
             <Input value={note} onChange={(e) => setNote(e.target.value)} placeholder="What changed? (optional)" className="flex-1" />
             <div className="flex gap-2">
-              <Button variant="ghost" disabled={!dirty} onClick={() => setDraft(active.content)}>
+              <Button variant="ghost" disabled={!dirty} onClick={() => setDraft(active?.content ?? '')}>
                 <RotateCcw className="size-4" /> Discard
               </Button>
               <Link to={`/playground?app=${app.id}`}>
@@ -81,24 +89,30 @@ function PromptTab({ app }: { app: RelayApp }) {
               </Link>
               <Button
                 variant="primary"
-                disabled={!dirty || !draft.trim()}
-                onClick={() => {
-                  publishPrompt(app.id, draft, note.trim() || 'Untitled change')
-                  setNote('')
-                }}
+                disabled={!dirty || !draft.trim() || publish.isPending}
+                onClick={() =>
+                  publish.mutate({ content: draft, note: note.trim() || 'Untitled change' }, { onSuccess: () => setNote('') })
+                }
               >
-                <Upload className="size-4" /> Publish v{Math.max(...app.prompts.map((p) => p.version)) + 1}
+                <Upload className="size-4" /> {publish.isPending ? 'Publishing…' : `Publish v${nextVersion}`}
               </Button>
             </div>
           </div>
+          <InlineError error={publish.error ?? activate.error} />
         </div>
       </Card>
 
       <Card>
-        <CardHeader title={<span className="flex items-center gap-2"><History className="size-4 text-muted" /> Versions</span>} />
+        <CardHeader
+          title={
+            <span className="flex items-center gap-2">
+              <History className="size-4 text-muted" /> Versions
+            </span>
+          }
+        />
         <ul>
           {app.prompts.map((p) => {
-            const isActive = p.version === app.activeVersion
+            const isActive = p.version === app.activePromptVersion
             return (
               <li key={p.version} className="border-t border-line px-5 py-3 first:border-t-0">
                 <div className="flex items-center gap-2">
@@ -118,16 +132,14 @@ function PromptTab({ app }: { app: RelayApp }) {
                     <Button
                       size="sm"
                       variant="ghost"
-                      onClick={() => {
-                        activateVersion(app.id, p.version)
-                        setDraft(p.content)
-                      }}
+                      disabled={activate.isPending}
+                      onClick={() => activate.mutate(p.version, { onSuccess: () => setDraft(p.content) })}
                     >
                       Roll back
                     </Button>
                   )}
                 </div>
-                {viewed?.version === p.version && (
+                {viewing === p.version && (
                   <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap rounded-lg bg-bg p-3 font-mono text-[11px] leading-relaxed text-muted">
                     {p.content}
                   </pre>
@@ -141,10 +153,14 @@ function PromptTab({ app }: { app: RelayApp }) {
   )
 }
 
-function ModelTab({ app }: { app: RelayApp }) {
-  const { updateApp, providerKeys } = useStore()
+function ModelTab({ app }: { app: AppDetailDTO }) {
+  const update = useUpdateApp(app.id)
+  const providerKeys = useProviderKeys()
+  // Slider edits locally and saves on release, not on every tick.
+  const [temperature, setTemperature] = useState(app.temperature)
   const price = PRICING[app.model]
-  const missingKey = !providerKeys[app.provider]
+  const missingKey = providerKeys.data && !providerKeys.data.find((k) => k.provider === app.provider)?.configured
+  const commitTemperature = () => temperature !== app.temperature && update.mutate({ temperature })
 
   return (
     <Card className="max-w-2xl">
@@ -156,7 +172,7 @@ function ModelTab({ app }: { app: RelayApp }) {
               value={app.provider}
               onChange={(e) => {
                 const provider = e.target.value as Provider
-                updateApp(app.id, { provider, model: MODELS[provider][0] })
+                update.mutate({ provider, model: MODELS[provider][0]! })
               }}
             >
               <option value="anthropic">Anthropic</option>
@@ -165,8 +181,9 @@ function ModelTab({ app }: { app: RelayApp }) {
             </Select>
           </Field>
           <Field label="Model" hint={price && `$${price[0]} in / $${price[1]} out per 1M tokens`}>
-            <Select value={app.model} onChange={(e) => updateApp(app.id, { model: e.target.value })}>
-              {MODELS[app.provider].map((m) => (
+            <Select value={app.model} onChange={(e) => update.mutate({ model: e.target.value })}>
+              {/* Keep a custom model selectable even if it's not in our list */}
+              {[...new Set([app.model, ...MODELS[app.provider]])].map((m) => (
                 <option key={m}>{m}</option>
               ))}
             </Select>
@@ -181,39 +198,38 @@ function ModelTab({ app }: { app: RelayApp }) {
             before going live.
           </div>
         )}
-        <Field label={`Temperature · ${app.temperature.toFixed(1)}`} hint="Lower is more predictable, higher is more creative.">
+        <Field label={`Temperature · ${temperature.toFixed(1)}`} hint="Lower is more predictable, higher is more creative.">
           <input
             type="range"
             min={0}
             max={1}
             step={0.1}
-            value={app.temperature}
-            onChange={(e) => updateApp(app.id, { temperature: Number(e.target.value) })}
+            value={temperature}
+            onChange={(e) => setTemperature(Number(e.target.value))}
+            onPointerUp={commitTemperature}
+            onKeyUp={commitTemperature}
             className="w-full accent-accent"
           />
         </Field>
+        <InlineError error={update.error} />
       </div>
     </Card>
   )
 }
 
-function LimitsTab({ app }: { app: RelayApp }) {
-  const { updateApp } = useStore()
-  const setLimit = (i: number, patch: Partial<PlanLimit>) =>
-    updateApp(app.id, { limits: app.limits.map((l, j) => (j === i ? { ...l, ...patch } : l)) })
+function LimitsTab({ app }: { app: AppDetailDTO }) {
+  const replace = useReplaceLimits(app.id)
+  const [rows, setRows] = useState<PlanLimitDTO[]>(app.limits)
+  const dirty = JSON.stringify(rows) !== JSON.stringify(app.limits)
+  const setRow = (i: number, patch: Partial<PlanLimitDTO>) => setRows(rows.map((r, j) => (j === i ? { ...r, ...patch } : r)))
 
   return (
     <Card className="max-w-2xl">
       <CardHeader
         title="Usage limits"
-        description="Enforced per user, keyed by the plan claim in the token your Lambda signs."
+        description="Enforced per user per UTC day, keyed by the request's plan."
         actions={
-          <Button
-            size="sm"
-            onClick={() =>
-              updateApp(app.id, { limits: [...app.limits, { plan: `plan_${app.limits.length + 1}`, messagesPerDay: 50, maxOutputTokens: 1000 }] })
-            }
-          >
+          <Button size="sm" onClick={() => setRows([...rows, { plan: `plan_${rows.length + 1}`, messagesPerDay: 50, maxOutputTokens: 1000 }])}>
             Add plan
           </Button>
         }
@@ -229,19 +245,19 @@ function LimitsTab({ app }: { app: RelayApp }) {
             </tr>
           </thead>
           <tbody>
-            {app.limits.map((l, i) => (
+            {rows.map((l, i) => (
               <tr key={i} className="border-t border-line">
                 <td className="px-5 py-2.5">
-                  <Input value={l.plan} onChange={(e) => setLimit(i, { plan: e.target.value })} className="h-8 w-32 font-mono" />
+                  <Input value={l.plan} onChange={(e) => setRow(i, { plan: e.target.value })} className="h-8 w-32 font-mono" />
                 </td>
                 <td className="px-3 py-2.5">
-                  <Input type="number" min={0} value={l.messagesPerDay} onChange={(e) => setLimit(i, { messagesPerDay: Number(e.target.value) })} className="h-8 w-28 tabular-nums" />
+                  <Input type="number" min={0} value={l.messagesPerDay} onChange={(e) => setRow(i, { messagesPerDay: Number(e.target.value) })} className="h-8 w-28 tabular-nums" />
                 </td>
                 <td className="px-3 py-2.5">
-                  <Input type="number" min={1} value={l.maxOutputTokens} onChange={(e) => setLimit(i, { maxOutputTokens: Number(e.target.value) })} className="h-8 w-28 tabular-nums" />
+                  <Input type="number" min={1} value={l.maxOutputTokens} onChange={(e) => setRow(i, { maxOutputTokens: Number(e.target.value) })} className="h-8 w-28 tabular-nums" />
                 </td>
                 <td className="px-5 py-2.5 text-right">
-                  <Button size="sm" variant="ghost" onClick={() => updateApp(app.id, { limits: app.limits.filter((_, j) => j !== i) })}>
+                  <Button size="sm" variant="ghost" onClick={() => setRows(rows.filter((_, j) => j !== i))}>
                     Remove
                   </Button>
                 </td>
@@ -250,75 +266,118 @@ function LimitsTab({ app }: { app: RelayApp }) {
           </tbody>
         </table>
       </div>
+      <div className="flex items-center justify-end gap-2 border-t border-line px-5 py-3">
+        <InlineError error={replace.error} />
+        <span className="flex-1" />
+        <Button variant="ghost" size="sm" disabled={!dirty} onClick={() => setRows(app.limits)}>
+          Reset
+        </Button>
+        <Button variant="primary" size="sm" disabled={!dirty || replace.isPending} onClick={() => replace.mutate(rows)}>
+          <Save className="size-3.5" /> {replace.isPending ? 'Saving…' : 'Save limits'}
+        </Button>
+      </div>
     </Card>
   )
 }
 
-function IntegrationTab({ app }: { app: RelayApp }) {
-  const { updateApp } = useStore()
-  const [reveal, setReveal] = useState(false)
+function IntegrationTab({ app }: { app: AppDetailDTO }) {
+  const update = useUpdateApp(app.id)
+  const rotate = useRotateSecret(app.id)
+  const [secret, setSecret] = useState<string | null>(null)
+  const [secretError, setSecretError] = useState<Error | null>(null)
+  const [confirmRotate, setConfirmRotate] = useState(false)
+  const [webhookUrl, setWebhookUrl] = useState(app.webhookUrl ?? '')
+  const webhookDirty = webhookUrl !== (app.webhookUrl ?? '')
 
-  const lambdaSnippet = `// In your Lambda: mint a short-lived token for the signed-in user
-import { SignJWT } from 'jose'
+  const toggleReveal = async () => {
+    if (secret) return setSecret(null)
+    try {
+      setSecret(await fetchSigningSecret(app.id))
+    } catch (err) {
+      setSecretError(err as Error)
+    }
+  }
 
-const secret = new TextEncoder().encode(process.env.RELAY_SIGNING_SECRET)
+  const curl = `curl -N ${API_URL}/chat \\
+  -H 'Content-Type: application/json' \\
+  -d '{
+    "app": "${app.slug}",
+    "user": "usr_123",
+    "plan": "${app.limits[0]?.plan ?? 'free'}",
+    "messages": [{ "role": "user", "content": "Hello!" }]
+  }'`
 
-export async function relayToken(user) {
-  return new SignJWT({ app: '${app.slug}', plan: user.plan, vars: { /* prompt variables */ } })
-    .setProtectedHeader({ alg: 'HS256' })
-    .setSubject(user.id)
-    .setExpirationTime('5m')
-    .sign(secret)
-}`
+  const webhookVerify = `// Your Lambda: verify Relay's completion webhook
+import { createHmac, timingSafeEqual } from 'node:crypto'
 
-  const clientSnippet = `// In your client: stream from Relay with the token
-const res = await fetch('https://relay.cortexlumora.com/v1/chat', {
-  method: 'POST',
-  headers: { Authorization: \`Bearer \${token}\`, 'Content-Type': 'application/json' },
-  body: JSON.stringify({ messages }),
-})
-
-for await (const chunk of res.body.pipeThrough(new TextDecoderStream())) {
-  render(chunk) // SSE events: delta, usage, done
+export function verifyRelayWebhook(body: string, headers: Record<string, string>) {
+  const ts = headers['x-relay-timestamp']
+  if (Math.abs(Date.now() / 1000 - Number(ts)) > 60) throw new Error('stale')
+  const expected = createHmac('sha256', process.env.RELAY_SIGNING_SECRET!)
+    .update(\`\${ts}.\${body}\`)
+    .digest('hex')
+  const sig = headers['x-relay-signature'] ?? ''
+  if (sig.length !== expected.length || !timingSafeEqual(Buffer.from(sig), Buffer.from(expected)))
+    throw new Error('bad signature')
+  return JSON.parse(body) // { id, app, user, plan, status, message, usage, ... }
 }`
 
   return (
     <div className="grid gap-6 lg:grid-cols-2">
       <div className="space-y-6">
         <Card>
-          <CardHeader title="Signing secret" description="Your Lambda signs user tokens with this. Keep it server-side." />
+          <CardHeader title="Signing secret" description="Signs completion webhooks today; will sign user tokens once auth lands. Keep it server-side." />
           <div className="space-y-4 p-5">
             <div className="flex items-center gap-1 rounded-lg border border-line-strong bg-bg px-3 py-2">
-              <code className="flex-1 truncate font-mono text-xs">{reveal ? app.signingSecret : mask(app.signingSecret)}</code>
-              <button onClick={() => setReveal(!reveal)} className="rounded-md p-1.5 text-muted hover:bg-panel-2 hover:text-fg" aria-label="Toggle secret">
-                {reveal ? <EyeOff className="size-3.5" /> : <Eye className="size-3.5" />}
+              <code className="flex-1 truncate font-mono text-xs">{secret ?? app.signingSecretPreview}</code>
+              <button onClick={toggleReveal} className="rounded-md p-1.5 text-muted hover:bg-panel-2 hover:text-fg" aria-label="Toggle secret">
+                {secret ? <EyeOff className="size-3.5" /> : <Eye className="size-3.5" />}
               </button>
-              <CopyButton value={app.signingSecret} />
+              {secret && <CopyButton value={secret} />}
             </div>
-            <Button variant="danger" size="sm">
-              <RefreshCw className="size-3.5" /> Rotate secret
-            </Button>
+            <div className="flex items-center gap-3">
+              <Button
+                variant="danger"
+                size="sm"
+                disabled={rotate.isPending}
+                onClick={() => {
+                  if (!confirmRotate) return setConfirmRotate(true)
+                  rotate.mutate(undefined, {
+                    onSuccess: (r) => {
+                      setSecret(r.signingSecret)
+                      setConfirmRotate(false)
+                    },
+                  })
+                }}
+                onBlur={() => setConfirmRotate(false)}
+              >
+                <RefreshCw className="size-3.5" /> {confirmRotate ? 'Click again to rotate' : 'Rotate secret'}
+              </Button>
+              {confirmRotate && <span className="text-xs text-warn">Your Lambda must be updated with the new secret.</span>}
+            </div>
+            <InlineError error={secretError ?? rotate.error} />
           </div>
         </Card>
         <Card>
           <CardHeader title="Completion webhook" description="Relay POSTs the final message + token usage here after each stream." />
           <div className="space-y-3 p-5">
-            <Input
-              value={app.webhookUrl}
-              onChange={(e) => updateApp(app.id, { webhookUrl: e.target.value })}
-              placeholder="https://xxxx.lambda-url.region.on.aws/relay/webhook"
-              className="font-mono text-xs"
-            />
-            <div className="flex items-center gap-3">
-              <Button size="sm" disabled={!app.webhookUrl}>
-                Send test event
+            <div className="flex gap-2">
+              <Input
+                value={webhookUrl}
+                onChange={(e) => setWebhookUrl(e.target.value)}
+                placeholder="https://xxxx.lambda-url.region.on.aws/relay/webhook"
+                className="font-mono text-xs"
+              />
+              <Button disabled={!webhookDirty || update.isPending} onClick={() => update.mutate({ webhookUrl: webhookUrl.trim() || null })}>
+                Save
               </Button>
-              <span className="text-xs text-faint">Signed with the same secret (X-Relay-Signature).</span>
             </div>
+            <p className="text-xs text-faint">Signed with the secret above (X-Relay-Timestamp, X-Relay-Signature).</p>
+            <InlineError error={update.error} />
           </div>
         </Card>
         <Card>
-          <CardHeader title="App ID" />
+          <CardHeader title="App slug" description="Identifies this app in chat requests." />
           <div className="flex items-center gap-2 p-5">
             <code className="flex-1 font-mono text-xs text-muted">{app.slug}</code>
             <CopyButton value={app.slug} />
@@ -326,21 +385,28 @@ for await (const chunk of res.body.pipeThrough(new TextDecoderStream())) {
         </Card>
       </div>
       <div className="space-y-4">
-        <CodeBlock lang="lambda · ts" code={lambdaSnippet} />
-        <CodeBlock lang="client · ts" code={clientSnippet} />
+        <div className="rounded-lg border border-warn/30 bg-warn/5 px-4 py-3 text-xs leading-relaxed text-warn">
+          Dev mode: the chat endpoint trusts <code>app</code>, <code>user</code> and <code>plan</code> from the request body. These move
+          into a token signed by your backend once auth is added.
+        </div>
+        <CodeBlock lang="stream a reply · curl" code={curl} />
+        <CodeBlock lang="lambda · ts" code={webhookVerify} />
       </div>
     </div>
   )
 }
 
 export function AppDetail() {
-  const { appId } = useParams()
-  const { getApp, updateApp } = useStore()
+  const { appId = '' } = useParams()
+  const app = useApp(appId)
+  const update = useUpdateApp(appId)
   const [tab, setTab] = useState<Tab>('prompt')
-  const app = appId ? getApp(appId) : undefined
-  if (!app) return <NotFound />
 
-  const live = app.status === 'live'
+  if (app.isPending) return <Loading />
+  if (app.error instanceof ApiError && (app.error.status === 404 || app.error.status === 400)) return <NotFound />
+  if (app.isError) return <QueryError error={app.error} onRetry={() => app.refetch()} />
+
+  const live = app.data.status === 'live'
 
   return (
     <>
@@ -350,8 +416,8 @@ export function AppDetail() {
       <PageHeader
         title={
           <span className="flex items-center gap-3">
-            <span className="flex size-9 items-center justify-center rounded-lg bg-panel-2 text-lg">{app.emoji}</span>
-            {app.name}
+            <span className="flex size-9 items-center justify-center rounded-lg bg-panel-2 text-lg">{app.data.emoji}</span>
+            {app.data.name}
           </span>
         }
         description={
@@ -359,11 +425,11 @@ export function AppDetail() {
             <StatusDot live={live} />
             <span className={cn(live ? 'text-accent' : 'text-faint')}>{live ? 'Live' : 'Paused'}</span>
             <span className="text-faint">·</span>
-            <span className="font-mono text-xs">{app.model}</span>
+            <span className="font-mono text-xs">{app.data.model}</span>
           </span>
         }
         actions={
-          <Button onClick={() => updateApp(app.id, { status: live ? 'paused' : 'live' })}>
+          <Button onClick={() => update.mutate({ status: live ? 'paused' : 'live' })}>
             {live ? <Pause className="size-4" /> : <Play className="size-4" />}
             {live ? 'Pause streams' : 'Go live'}
           </Button>
@@ -379,10 +445,11 @@ export function AppDetail() {
           { id: 'integration', label: 'Integration' },
         ]}
       />
-      {tab === 'prompt' && <PromptTab key={app.id} app={app} />}
-      {tab === 'model' && <ModelTab app={app} />}
-      {tab === 'limits' && <LimitsTab app={app} />}
-      {tab === 'integration' && <IntegrationTab app={app} />}
+      {/* Keyed by app so local drafts reset when navigating between apps */}
+      {tab === 'prompt' && <PromptTab key={app.data.id} app={app.data} />}
+      {tab === 'model' && <ModelTab key={`${app.data.id}-${app.data.temperature}`} app={app.data} />}
+      {tab === 'limits' && <LimitsTab key={app.data.id} app={app.data} />}
+      {tab === 'integration' && <IntegrationTab key={app.data.id} app={app.data} />}
     </>
   )
 }

@@ -1,6 +1,8 @@
 import { Activity, AppWindow, FlaskConical, KeyRound, LayoutDashboard, LogOut, Menu, X } from 'lucide-react'
 import { useState } from 'react'
 import { Link, NavLink, Outlet } from 'react-router'
+import { API_URL } from '../api/client'
+import { useHealth } from '../api/hooks'
 import { cn } from '../lib/cn'
 
 const nav = [
@@ -47,16 +49,24 @@ function Nav({ onNavigate }: { onNavigate?: () => void }) {
   )
 }
 
+function GatewayStatus() {
+  const health = useHealth()
+  const ok = health.isSuccess
+  return (
+    <div className="rounded-lg border border-line bg-panel-2/50 p-3 text-xs">
+      <div className="flex items-center gap-2 text-muted">
+        <span className={cn('size-1.5 rounded-full', health.isPending ? 'bg-faint' : ok ? 'bg-accent' : 'bg-danger')} />
+        {health.isPending ? 'Checking gateway…' : ok ? 'Gateway healthy' : 'Gateway unreachable'}
+      </div>
+      <div className="mt-1 truncate font-mono text-[11px] text-faint">{API_URL.replace(/^https?:\/\//, '')}</div>
+    </div>
+  )
+}
+
 function Footer() {
   return (
     <div className="mt-auto space-y-3">
-      <div className="rounded-lg border border-line bg-panel-2/50 p-3 text-xs">
-        <div className="flex items-center gap-2 text-muted">
-          <span className="size-1.5 rounded-full bg-accent" />
-          Gateway healthy
-        </div>
-        <div className="mt-1 font-mono text-[11px] text-faint">relay.cortexlumora.com</div>
-      </div>
+      <GatewayStatus />
       <div className="flex items-center gap-2.5 border-t border-line px-1 pt-3">
         <div className="flex size-8 shrink-0 items-center justify-center rounded-full bg-accent/15 text-xs font-semibold text-accent">V</div>
         <div className="min-w-0 flex-1">
