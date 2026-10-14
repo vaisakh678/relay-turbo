@@ -3,8 +3,7 @@ import type {
   AppDTO,
   AppStatsDTO,
   CreatedTestTokenDTO,
-  CursorPagedResponse,
-  LogDTO,
+  LogPageDTO,
   PlanLimitDTO,
   PlaygroundTokenDTO,
   PromptVersionDTO,
@@ -165,10 +164,27 @@ export function useLogs(filters: LogFilters = {}, pageSize = 50) {
       if (filters.status) params.set('status', filters.status)
       if (filters.tokenKind) params.set('tokenKind', filters.tokenKind)
       if (pageParam) params.set('cursor', pageParam)
-      return api<CursorPagedResponse<LogDTO>>(`/logs?${params}`)
+      return api<LogPageDTO>(`/logs?${params}`)
     },
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (last) => last.nextCursor ?? undefined,
+    placeholderData: keepPreviousData,
+  })
+}
+
+/** One page of logs. `cursor` is the last ID of the previous page (undefined = first page). */
+export function useLogsPage(filters: LogFilters, cursor: string | undefined, pageSize: number) {
+  return useQuery({
+    queryKey: [...keys.logs(filters), 'page', cursor ?? null, pageSize] as const,
+    queryFn: () => {
+      const params = new URLSearchParams({ limit: String(pageSize) })
+      if (filters.appId) params.set('appId', filters.appId)
+      if (filters.status) params.set('status', filters.status)
+      if (filters.tokenKind) params.set('tokenKind', filters.tokenKind)
+      if (cursor) params.set('cursor', cursor)
+      return api<LogPageDTO>(`/logs?${params}`)
+    },
+    // Keep showing the current page while the next one loads
     placeholderData: keepPreviousData,
   })
 }

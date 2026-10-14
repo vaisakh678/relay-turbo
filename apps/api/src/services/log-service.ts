@@ -1,9 +1,8 @@
 import db, { appSchema, requestLogSchema, type NewRequestLogRow, type RequestLogRow } from "@repo/db";
-import type { AppStatsDTO, LogDTO, TimeseriesPointDTO } from "@repo/dto";
+import type { AppStatsDTO, LogDTO, LogPageDTO, TimeseriesPointDTO } from "@repo/dto";
 import { and, count, desc, eq, gte, inArray, isNull, lt, sql } from "drizzle-orm";
 
 import type { LogListQuery } from "../lib/validators";
-import type { CursorPagedResponse } from "../lib/types";
 
 
 function logToDTO(row: RequestLogRow): LogDTO {
@@ -17,27 +16,34 @@ export async function insertLog(log: NewRequestLogRow): Promise<void> {
 
 /**
  * Newest first. IDs are UUIDv7 (time-ordered), so the cursor is simply the
- * last ID seen and "older than cursor" is `id < cursor`.
+ * last ID seen and "older than cursor" is `id < cursor`. `total` counts every
+ * row matching the filters (ignoring the cursor) for "1–50 of 1,234".
  */
-export async function listLogs(query: LogListQuery): Promise<CursorPagedResponse<LogDTO>> {
+export async function listLogs(query: LogListQuery): Promise<LogPageDTO> {
   const { appId, status, tokenKind, cursor, limit } = query;
-  const conditions = [
+  const filters = [
     appId ? eq(requestLogSchema.appId, appId) : undefined,
     status ? eq(requestLogSchema.status, status) : undefined,
     tokenKind ? eq(requestLogSchema.tokenKind, tokenKind) : undefined,
-    cursor ? lt(requestLogSchema.id, cursor) : undefined,
   ].filter((c) => c !== undefined);
+  const pageConditions = cursor ? [...filters, lt(requestLogSchema.id, cursor)] : filters;
 
-  const rows = await db
-    .select()
-    .from(requestLogSchema)
-    .where(conditions.length ? and(...conditions) : undefined)
-    .orderBy(desc(requestLogSchema.id))
-    .limit(limit + 1);
+  const [rows, [counted]] = await Promise.all([
+    db
+      .select()
+      .from(requestLogSchema)
+      .where(pageConditions.length ? and(...pageConditions) : undefined)
+      .orderBy(desc(requestLogSchema.id))
+      .limit(limit + 1),
+    db
+      .select({ n: count() })
+      .from(requestLogSchema)
+      .where(filters.length ? and(...filters) : undefined),
+  ]);
 
   const hasMore = rows.length > limit;
   const items = rows.slice(0, limit).map(logToDTO);
-  return { items, nextCursor: hasMore ? (items[items.length - 1]?.id ?? null) : null };
+  return { items, nextCursor: hasMore ? (items[items.length - 1]?.id ?? null) : null, total: counted?.n ?? 0 };
 }
 
 /** Test-token requests for an app (all tokens combined) that count toward its daily test cap. */

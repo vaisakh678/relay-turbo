@@ -1,4 +1,4 @@
-import type { Provider, RequestStatus, TokenKind } from "./common";
+import type { CursorPagedResponse, Provider, RequestStatus, TokenKind } from "./common";
 
 export interface LogDTO {
   id: string;
@@ -36,4 +36,9 @@ export interface TimeseriesPointDTO {
   hour: string;
   /** Request count keyed by app ID; apps with no requests are omitted. */
   byApp: Record<string, number>;
+}
+
+/** GET /logs — one page, newest first, plus the total for the current filters. */
+export interface LogPageDTO extends CursorPagedResponse<LogDTO> {
+  total: number;
 }
