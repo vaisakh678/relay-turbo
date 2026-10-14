@@ -1,14 +1,14 @@
-import type { AppDetailDTO, ChatRequestDTO } from '@repo/dto'
+import type { AppDetailDTO } from '@repo/dto'
+import { AbortError, createRelay, RateLimitError, type RelayStream } from '@sse-relay/sdk'
 import { useQueryClient } from '@tanstack/react-query'
 import { ArrowUp, Square, Trash2 } from 'lucide-react'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useSearchParams } from 'react-router'
-import { API_URL } from '../api/client'
+import { API_ORIGIN } from '../api/client'
 import { fetchPlaygroundToken, useApp, useApps } from '../api/hooks'
 import { Badge, Button, Card, CardHeader, Field, Input, Loading, PageHeader, QueryError, Select, Textarea } from '../components/ui'
 import { cn } from '../lib/cn'
 import { ms } from '../lib/format'
-import { readEvents } from '../lib/sse'
 
 type Message = { role: 'user' | 'assistant'; content: string; error?: boolean }
 type Metrics = { ttft: number | null; duration: number; tokens: number }
@@ -34,9 +34,7 @@ function Chat({ app }: { app: AppDetailDTO }) {
   const [streaming, setStreaming] = useState(false)
   const [metrics, setMetrics] = useState<Metrics | null>(null)
   const [events, setEvents] = useState<LogLine[]>([])
-  const abortRef = useRef<AbortController | null>(null)
-  // Reused until shortly before expiry; re-minted when plan or vars change (they're baked into the token)
-  const tokenRef = useRef<{ key: string; token: string; expiresAt: number } | null>(null)
+  const streamRef = useRef<RelayStream | null>(null)
   const chatRef = useAutoScroll(messages)
   const eventsRef = useAutoScroll(events)
 
@@ -47,6 +45,26 @@ function Chat({ app }: { app: AppDetailDTO }) {
   const appendToReply = (patch: (m: Message) => Message) =>
     setMessages((ms) => [...ms.slice(0, -1), patch(ms[ms.length - 1]!)])
 
+  const filledVars = useMemo(() => Object.fromEntries(Object.entries(vars).filter(([, v]) => v)), [vars])
+  const startRef = useRef(0)
+  const log = (line: string, kind: LogLine['kind'] = 'meta') =>
+    setEvents((e) => [...e.slice(-300), { t: performance.now() - startRef.current, line, kind }])
+
+  // Plan and vars are baked into the token, so a change means a new client (and a new token).
+  // The SDK caches the token until shortly before expiry and refreshes it on a 401.
+  const relay = useMemo(
+    () =>
+      createRelay({
+        baseUrl: API_ORIGIN,
+        token: async () => {
+          const { token, expiresAt } = await fetchPlaygroundToken(app.id, { user: PLAYGROUND_USER, plan, vars: filledVars })
+          log(`↻ minted playground token (expires ${new Date(expiresAt).toLocaleTimeString()})`)
+          return token
+        },
+      }),
+    [app.id, plan, filledVars],
+  )
+
   async function send() {
     const text = input.trim()
     if (!text || streaming) return
@@ -56,69 +74,50 @@ function Chat({ app }: { app: AppDetailDTO }) {
     setStreaming(true)
     setMetrics(null)
 
-    const controller = new AbortController()
-    abortRef.current = controller
-    const start = performance.now()
+    startRef.current = performance.now()
     let ttft: number | null = null
     let tokens = 0
-    const log = (line: string, kind: LogLine['kind'] = 'meta') =>
-      setEvents((e) => [...e.slice(-300), { t: performance.now() - start, line, kind }])
-
-    const filledVars = Object.fromEntries(Object.entries(vars).filter(([, v]) => v))
-    const tokenKey = JSON.stringify([plan, filledVars])
-    const getToken = async (force = false) => {
-      const cached = tokenRef.current
-      if (!force && cached?.key === tokenKey && cached.expiresAt - Date.now() > 30_000) return cached.token
-      const { token, expiresAt } = await fetchPlaygroundToken(app.id, { user: PLAYGROUND_USER, plan, vars: filledVars })
-      tokenRef.current = { key: tokenKey, token, expiresAt: new Date(expiresAt).getTime() }
-      log(`↻ minted playground token (expires ${new Date(expiresAt).toLocaleTimeString()})`)
-      return token
-    }
-
-    const body: ChatRequestDTO = { messages: history.map(({ role, content }) => ({ role, content })) }
     log(`→ POST /chat  app=${app.slug} plan=${plan}`)
 
+    const stream = relay.stream({ messages: history.map(({ role, content }) => ({ role, content })) })
+    streamRef.current = stream
     try {
-      const post = async (token: string) =>
-        fetch(`${API_URL}/chat`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-          body: JSON.stringify(body),
-          signal: controller.signal,
-        })
-      let res = await post(await getToken())
-      // A rotated secret or expired token: mint a fresh one and retry once
-      if (res.status === 401) res = await post(await getToken(true))
-      if (!res.ok || !res.body) {
-        const err = (await res.json().catch(() => null)) as { error?: string } | null
-        throw new Error(err?.error ?? `Request failed (${res.status})`)
-      }
-      log(`← ${res.status} text/event-stream`)
-
-      for await (const e of readEvents(res.body)) {
-        if (e.event === 'delta') {
-          ttft ??= performance.now() - start
-          appendToReply((m) => ({ ...m, content: m.content + e.data.text }))
-          log(`event: delta  ${JSON.stringify(e.data.text)}`, 'delta')
-        } else if (e.event === 'error') {
-          throw new Error(e.data.message)
+      for await (const e of stream) {
+        if (e.type === 'delta') {
+          ttft ??= performance.now() - startRef.current
+          appendToReply((m) => ({ ...m, content: m.content + e.text }))
+          log(`delta  ${JSON.stringify(e.text)}`, 'delta')
         } else {
-          if (e.event === 'usage') tokens = e.data.output
-          log(`event: ${e.event}  ${JSON.stringify(e.data)}`)
+          if (e.type === 'done' && e.finishReason === 'length') {
+            // Hit the plan's max output tokens; with reasoning models this can happen before any text
+            appendToReply((m) =>
+              m.content
+                ? { ...m, content: `${m.content}\n\n[cut off: reached the plan's ${limit?.maxOutputTokens ?? ''} max output tokens]` }
+                : { ...m, error: true, content: `No text: the model used all ${tokens || limit?.maxOutputTokens} output tokens before answering. Raise this plan's max output tokens.` },
+            )
+          }
+          if (e.type === 'usage') tokens = e.usage.output
+          const { type, ...data } = e
+          log(`${type}  ${JSON.stringify(data)}`)
         }
       }
     } catch (err) {
-      if (controller.signal.aborted) {
+      if (err instanceof AbortError) {
         log('✕ aborted by client')
       } else {
-        const message = err instanceof Error ? err.message : String(err)
-        log(`✕ ${message}`, 'error')
+        const message =
+          err instanceof RateLimitError && err.resetAt
+            ? `${err.message} (resets ${err.resetAt.toLocaleTimeString()})`
+            : err instanceof Error
+              ? err.message
+              : String(err)
+        log(`✕ ${err instanceof Error ? err.constructor.name : 'Error'}: ${message}`, 'error')
         appendToReply((m) => ({ ...m, content: m.content || message, error: !m.content }))
       }
     } finally {
-      setMetrics({ ttft, duration: performance.now() - start, tokens })
+      setMetrics({ ttft, duration: performance.now() - startRef.current, tokens })
       setStreaming(false)
-      abortRef.current = null
+      streamRef.current = null
       // The stream wrote a log row; refresh anything that shows logs/stats
       void qc.invalidateQueries({ queryKey: ['logs'] })
       void qc.invalidateQueries({ queryKey: ['stats'] })
@@ -233,7 +232,7 @@ function Chat({ app }: { app: AppDetailDTO }) {
                 className="max-h-40 resize-none border-0 bg-transparent focus:ring-0"
               />
               {streaming ? (
-                <Button type="button" onClick={() => abortRef.current?.abort()} className="size-9 shrink-0 px-0" aria-label="Stop">
+                <Button type="button" onClick={() => streamRef.current?.abort()} className="size-9 shrink-0 px-0" aria-label="Stop">
                   <Square className="size-3.5 fill-current" />
                 </Button>
               ) : (
