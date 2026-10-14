@@ -14,3 +14,4 @@ export interface CursorPagedResponse<T> {
 export type Provider = "anthropic" | "openai" | "google";
 export type AppStatus = "live" | "paused";
 export type RequestStatus = "ok" | "error" | "rate_limited" | "aborted";
+export type TokenKind = "live" | "test" | "playground";

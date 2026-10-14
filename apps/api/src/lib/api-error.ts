@@ -13,6 +13,7 @@ export class APIError extends Error {
 }
 
 export const BadRequest = (message: string, meta?: ResponseMeta) => new APIError(400, message, meta);
+export const Unauthorized = (message = "Unauthorized") => new APIError(401, message);
 export const Forbidden = (message = "Forbidden") => new APIError(403, message);
 export const NotFound = (message: string) => new APIError(404, message);
 export const Conflict = (message: string) => new APIError(409, message);

@@ -4,7 +4,7 @@ import { ArrowUp, Square, Trash2 } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { Link, useSearchParams } from 'react-router'
 import { API_URL } from '../api/client'
-import { useApp, useApps } from '../api/hooks'
+import { fetchPlaygroundToken, useApp, useApps } from '../api/hooks'
 import { Badge, Button, Card, CardHeader, Field, Input, Loading, PageHeader, QueryError, Select, Textarea } from '../components/ui'
 import { cn } from '../lib/cn'
 import { ms } from '../lib/format'
@@ -35,6 +35,8 @@ function Chat({ app }: { app: AppDetailDTO }) {
   const [metrics, setMetrics] = useState<Metrics | null>(null)
   const [events, setEvents] = useState<LogLine[]>([])
   const abortRef = useRef<AbortController | null>(null)
+  // Reused until shortly before expiry; re-minted when plan or vars change (they're baked into the token)
+  const tokenRef = useRef<{ key: string; token: string; expiresAt: number } | null>(null)
   const chatRef = useAutoScroll(messages)
   const eventsRef = useAutoScroll(events)
 
@@ -62,22 +64,31 @@ function Chat({ app }: { app: AppDetailDTO }) {
     const log = (line: string, kind: LogLine['kind'] = 'meta') =>
       setEvents((e) => [...e.slice(-300), { t: performance.now() - start, line, kind }])
 
-    const body: ChatRequestDTO = {
-      app: app.slug,
-      user: PLAYGROUND_USER,
-      plan,
-      vars: Object.fromEntries(Object.entries(vars).filter(([, v]) => v)),
-      messages: history.map(({ role, content }) => ({ role, content })),
+    const filledVars = Object.fromEntries(Object.entries(vars).filter(([, v]) => v))
+    const tokenKey = JSON.stringify([plan, filledVars])
+    const getToken = async (force = false) => {
+      const cached = tokenRef.current
+      if (!force && cached?.key === tokenKey && cached.expiresAt - Date.now() > 30_000) return cached.token
+      const { token, expiresAt } = await fetchPlaygroundToken(app.id, { user: PLAYGROUND_USER, plan, vars: filledVars })
+      tokenRef.current = { key: tokenKey, token, expiresAt: new Date(expiresAt).getTime() }
+      log(`↻ minted playground token (expires ${new Date(expiresAt).toLocaleTimeString()})`)
+      return token
     }
+
+    const body: ChatRequestDTO = { messages: history.map(({ role, content }) => ({ role, content })) }
     log(`→ POST /chat  app=${app.slug} plan=${plan}`)
 
     try {
-      const res = await fetch(`${API_URL}/chat`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-        signal: controller.signal,
-      })
+      const post = async (token: string) =>
+        fetch(`${API_URL}/chat`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify(body),
+          signal: controller.signal,
+        })
+      let res = await post(await getToken())
+      // A rotated secret or expired token: mint a fresh one and retry once
+      if (res.status === 401) res = await post(await getToken(true))
       if (!res.ok || !res.body) {
         const err = (await res.json().catch(() => null)) as { error?: string } | null
         throw new Error(err?.error ?? `Request failed (${res.status})`)

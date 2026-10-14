@@ -2,7 +2,7 @@ import type { AppRow, PlanLimitRow, PromptVersionRow, requestStatusEnum } from "
 import { streamText, type LanguageModel } from "ai";
 import { v7 as uuidv7 } from "uuid";
 
-import { Forbidden, NotFound, ServiceUnavailable, TooManyRequests, BadRequest } from "../lib/api-error";
+import { BadRequest, Forbidden, ServiceUnavailable, TooManyRequests } from "../lib/api-error";
 import type { RelayEvent } from "../lib/events";
 import { nextUtcDay, renderTemplate, startOfUtcDay } from "../lib/helpers";
 import { logger } from "../lib/logger";
@@ -10,60 +10,83 @@ import { createModel } from "../lib/models";
 import { costMicros, isPricedModel } from "../lib/pricing";
 import type { ChatRequest } from "../lib/validators";
 import { sendWebhook } from "../lib/webhook";
-import { findAppBySlug, getActivePrompt, getPlanLimit } from "./app-service";
-import { countRequestsSince, insertLog } from "./log-service";
+import { getActivePrompt, getPlanLimit } from "./app-service";
+import { countRequestsSince, countTestRequestsSince, insertLog } from "./log-service";
 import { getProviderKey } from "./provider-key-service";
+import type { ChatAuth } from "./token-service";
 
 type RequestStatus = (typeof requestStatusEnum.enumValues)[number];
 
 export type PreparedChat = {
   id: string;
-  request: ChatRequest;
+  auth: ChatAuth;
+  messages: ChatRequest["messages"];
+  /** Client vars overlaid with token vars (token wins). */
+  vars: Record<string, string>;
   app: AppRow;
   prompt: PromptVersionRow;
   limit: PlanLimitRow;
   apiKey: string;
 };
 
+// Across all test tokens for one app, per UTC day — caps the damage a leaked one can do.
+export const TEST_TOKEN_DAILY_CAP = 100;
+
 /**
  * Everything that can fail *before* we open the stream, so the client gets a
- * plain HTTP status (404/403/429/503) instead of an SSE error event.
+ * plain HTTP status (403/429/503) instead of an SSE error event.
  */
-export async function prepareChat(request: ChatRequest): Promise<PreparedChat> {
-  const app = await findAppBySlug(request.app);
-  if (!app) throw NotFound(`Unknown app "${request.app}"`);
+export async function prepareChat(auth: ChatAuth, body: ChatRequest): Promise<PreparedChat> {
+  const { app, user, plan } = auth;
   if (app.status !== "live") throw Forbidden(`App "${app.slug}" is paused`);
 
   const [prompt, limit, apiKey] = await Promise.all([
     getActivePrompt(app),
-    getPlanLimit(app.id, request.plan),
+    getPlanLimit(app.id, plan),
     getProviderKey(app.provider),
   ]);
   if (!prompt) throw ServiceUnavailable(`App "${app.slug}" has no active prompt`);
-  if (!limit) throw BadRequest(`Unknown plan "${request.plan}" for app "${app.slug}"`);
+  if (!limit) throw BadRequest(`Unknown plan "${plan}" for app "${app.slug}"`);
   if (!apiKey) throw ServiceUnavailable(`No ${app.provider} API key configured`);
 
-  const used = await countRequestsSince(app.id, request.user, startOfUtcDay());
-  if (used >= limit.messagesPerDay) {
+  const rejectAs = async (message: string, meta: Record<string, unknown>) => {
     await insertLog({
       appId: app.id,
-      externalUserId: request.user,
-      plan: request.plan,
+      externalUserId: user,
+      plan,
+      tokenKind: auth.kind,
+      testTokenId: auth.testTokenId,
       provider: app.provider,
       model: app.model,
       promptVersion: prompt.version,
       status: "rate_limited",
       durationMs: 0,
     });
-    throw TooManyRequests(`Daily message limit reached for plan "${request.plan}"`, {
-      code: "rate_limited",
-      limit: limit.messagesPerDay,
-      used,
-      resetAt: nextUtcDay().toISOString(),
-    });
+    throw TooManyRequests(message, { ...meta, resetAt: nextUtcDay().toISOString() });
+  };
+
+  if (auth.kind === "test") {
+    const used = await countTestRequestsSince(app.id, startOfUtcDay());
+    if (used >= TEST_TOKEN_DAILY_CAP) {
+      await rejectAs(`Daily test-token cap reached for "${app.slug}"`, { code: "test_cap", limit: TEST_TOKEN_DAILY_CAP, used });
+    }
   }
 
-  return { id: uuidv7(), request, app, prompt, limit, apiKey };
+  const used = await countRequestsSince(app.id, user, startOfUtcDay());
+  if (used >= limit.messagesPerDay) {
+    await rejectAs(`Daily message limit reached for plan "${plan}"`, { code: "rate_limited", limit: limit.messagesPerDay, used });
+  }
+
+  return {
+    id: uuidv7(),
+    auth,
+    messages: body.messages,
+    vars: { ...body.vars, ...auth.vars },
+    app,
+    prompt,
+    limit,
+    apiKey,
+  };
 }
 
 /**
@@ -78,7 +101,7 @@ export async function runChat(
   // Injectable for tests (ai/test MockLanguageModelV4); defaults to the app's real provider.
   model: LanguageModel = createModel(chat.app.provider, chat.app.model, chat.apiKey),
 ) {
-  const { id, request, app, prompt, limit } = chat;
+  const { id, auth, app, prompt, limit } = chat;
   const startedAt = performance.now();
   let ttftMs: number | null = null;
   let text = "";
@@ -94,8 +117,8 @@ export async function runChat(
 
     const result = streamText({
       model,
-      instructions: renderTemplate(prompt.content, request.vars),
-      messages: request.messages,
+      instructions: renderTemplate(prompt.content, chat.vars),
+      messages: chat.messages,
       temperature: app.temperature,
       maxOutputTokens: limit.maxOutputTokens,
       abortSignal: signal,
@@ -139,8 +162,10 @@ export async function runChat(
   await insertLog({
     id,
     appId: app.id,
-    externalUserId: request.user,
-    plan: request.plan,
+    externalUserId: auth.user,
+    plan: auth.plan,
+    tokenKind: auth.kind,
+    testTokenId: auth.testTokenId,
     provider: app.provider,
     model: app.model,
     promptVersion: prompt.version,
@@ -154,13 +179,15 @@ export async function runChat(
   }).catch((err) => logger.error({ err, requestId: id }, "Failed to write request log"));
 
   // Delivered even if the client disconnected, so the app's backend still
-  // records what was generated (and billed).
-  if (app.webhookUrl && status !== "error") {
+  // records what was generated (and billed). Playground chats are the
+  // dashboard's own and never reach the app's backend.
+  if (app.webhookUrl && status !== "error" && auth.kind !== "playground") {
     void sendWebhook(app.webhookUrl, app.signingSecret, {
       id,
       app: app.slug,
-      user: request.user,
-      plan: request.plan,
+      user: auth.user,
+      plan: auth.plan,
+      tokenKind: auth.kind,
       status,
       model: app.model,
       promptVersion: prompt.version,

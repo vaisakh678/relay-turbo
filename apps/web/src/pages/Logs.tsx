@@ -1,4 +1,4 @@
-import type { AppDTO, LogDTO, RequestStatus } from '@repo/dto'
+import type { AppDTO, LogDTO, RequestStatus, TokenKind } from '@repo/dto'
 import { X } from 'lucide-react'
 import { useState } from 'react'
 import { useApps, useLogs } from '../api/hooks'
@@ -19,6 +19,7 @@ function Detail({ log, app, onClose }: { log: LogDTO; app?: AppDTO; onClose: () 
     ['App', app ? `${app.emoji} ${app.name}` : 'Deleted app'],
     ['User', log.externalUserId],
     ['Plan', log.plan],
+    ['Token', log.tokenKind],
     ['Model', log.model],
     ['Prompt', `v${log.promptVersion}`],
     ['Input tokens', String(log.inputTokens)],
@@ -67,8 +68,9 @@ export function Logs() {
   const apps = useApps()
   const [appId, setAppId] = useState('')
   const [status, setStatus] = useState<'' | RequestStatus>('')
+  const [tokenKind, setTokenKind] = useState<'' | TokenKind>('')
   const [selected, setSelected] = useState<LogDTO | null>(null)
-  const logs = useLogs({ appId: appId || undefined, status: status || undefined })
+  const logs = useLogs({ appId: appId || undefined, status: status || undefined, tokenKind: tokenKind || undefined })
   const items = logs.data?.pages.flatMap((p) => p.items) ?? []
   const appOf = (id: string) => apps.data?.find((a) => a.id === id)
 
@@ -92,6 +94,12 @@ export function Logs() {
           <option value="rate_limited">rate limited</option>
           <option value="aborted">aborted</option>
         </Select>
+        <Select value={tokenKind} onChange={(e) => setTokenKind(e.target.value as '' | TokenKind)} className="w-40">
+          <option value="">All traffic</option>
+          <option value="live">Live</option>
+          <option value="test">Test tokens</option>
+          <option value="playground">Playground</option>
+        </Select>
         <Button variant="ghost" onClick={() => logs.refetch()} disabled={logs.isFetching}>
           {logs.isFetching ? 'Refreshing…' : 'Refresh'}
         </Button>
@@ -103,7 +111,7 @@ export function Logs() {
         ) : logs.isError ? (
           <QueryError error={logs.error} onRetry={() => logs.refetch()} />
         ) : items.length === 0 ? (
-          <Empty>No requests yet{appId || status ? ' for these filters' : ''}. Send one from the Playground.</Empty>
+          <Empty>No requests yet{appId || status || tokenKind ? ' for these filters' : ''}. Send one from the Playground.</Empty>
         ) : (
           <div className={cn('overflow-x-auto transition-opacity', logs.isPlaceholderData && 'opacity-50')}>
             <table className="w-full text-sm">
@@ -134,6 +142,11 @@ export function Logs() {
                       <td className="whitespace-nowrap px-3 py-2.5">{app ? `${app.emoji} ${app.name}` : '–'}</td>
                       <td className="px-3 py-2.5 font-mono text-xs text-muted">
                         {l.externalUserId} <span className="text-faint">· {l.plan}</span>
+                        {l.tokenKind !== 'live' && (
+                          <span className="ml-2 align-middle">
+                            <Badge tone="info">{l.tokenKind}</Badge>
+                          </span>
+                        )}
                       </td>
                       <td className="hidden px-3 py-2.5 font-mono text-xs text-muted md:table-cell">{l.model}</td>
                       <td className="px-3 py-2.5 text-right tabular-nums text-muted">{(l.inputTokens + l.outputTokens).toLocaleString()}</td>

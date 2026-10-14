@@ -7,17 +7,19 @@ export type RelayEvent =
   | { event: "error"; data: { code: "upstream_error" | "internal_error"; message: string } }
   | { event: "done"; data: { finishReason: string } };
 
+/**
+ * POST /api/v1/chat body. App, user and plan come from the bearer token
+ * (`Authorization: Bearer <jwt>`); `vars` here are untrusted client input
+ * and are overridden by any vars in the token.
+ */
 export interface ChatRequestDTO {
-  app: string;
-  user: string;
-  plan: string;
   vars?: Record<string, string>;
   messages: { role: "user" | "assistant"; content: string }[];
 }
 
 /** `meta` on a 429 from POST /chat. */
 export interface RateLimitMeta {
-  code: "rate_limited";
+  code: "rate_limited" | "test_cap";
   limit: number;
   used: number;
   resetAt: string;

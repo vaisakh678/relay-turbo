@@ -5,8 +5,11 @@ import type { APIResponse } from "../lib/types";
 import {
   createAppSchema,
   idParamSchema,
+  createTestTokenSchema,
+  playgroundTokenSchema,
   publishPromptSchema,
   replaceLimitsSchema,
+  tokenParamSchema,
   updateAppSchema,
   versionParamSchema,
 } from "../lib/validators";
@@ -22,6 +25,7 @@ import {
   rotateSigningSecret,
   updateApp,
 } from "../services/app-service";
+import { createPlaygroundToken, createTestToken, listTestTokens, revokeTestToken } from "../services/token-service";
 
 const appRoute = new Hono()
   // GET /api/v1/apps
@@ -75,6 +79,27 @@ const appRoute = new Hono()
   .put("/:id/limits", validate("param", idParamSchema), validate("json", replaceLimitsSchema), async (c) => {
     const limits = await replaceLimits(c.req.valid("param").id, c.req.valid("json").limits);
     return c.json<APIResponse<typeof limits>>({ data: limits });
+  })
+  // GET /api/v1/apps/:id/test-tokens — metadata only, never the token strings
+  .get("/:id/test-tokens", validate("param", idParamSchema), async (c) => {
+    const tokens = await listTestTokens(c.req.valid("param").id);
+    return c.json<APIResponse<typeof tokens>>({ data: tokens });
+  })
+  // POST /api/v1/apps/:id/test-tokens — returns the token string once
+  .post("/:id/test-tokens", validate("param", idParamSchema), validate("json", createTestTokenSchema), async (c) => {
+    const created = await createTestToken(c.req.valid("param").id, c.req.valid("json"));
+    return c.json<APIResponse<typeof created>>({ data: created }, 201);
+  })
+  // DELETE /api/v1/apps/:id/test-tokens/:tokenId — revoke (takes effect on the next request)
+  .delete("/:id/test-tokens/:tokenId", validate("param", tokenParamSchema), async (c) => {
+    const { id, tokenId } = c.req.valid("param");
+    const token = await revokeTestToken(id, tokenId);
+    return c.json<APIResponse<typeof token>>({ data: token });
+  })
+  // POST /api/v1/apps/:id/playground-token — 5-minute token for the dashboard Playground
+  .post("/:id/playground-token", validate("param", idParamSchema), validate("json", playgroundTokenSchema), async (c) => {
+    const token = await createPlaygroundToken(c.req.valid("param").id, c.req.valid("json"));
+    return c.json<APIResponse<typeof token>>({ data: token }, 201);
   });
 
 export default appRoute;
