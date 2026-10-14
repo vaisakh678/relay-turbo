@@ -220,3 +220,30 @@ export function Modal({ open, onClose, title, children }: { open: boolean; onClo
 export function Empty({ children }: { children: ReactNode }) {
   return <div className="px-5 py-12 text-center text-sm text-faint">{children}</div>
 }
+
+export function Loading({ label = 'Loading…' }: { label?: string }) {
+  return (
+    <div className="flex items-center justify-center gap-2 px-5 py-12 text-sm text-faint">
+      <span className="size-3.5 animate-spin rounded-full border-2 border-line-strong border-t-accent" />
+      {label}
+    </div>
+  )
+}
+
+export function QueryError({ error, onRetry }: { error: Error | null; onRetry?: () => void }) {
+  return (
+    <div className="flex flex-col items-center gap-3 px-5 py-12 text-center">
+      <p className="max-w-md text-sm text-danger">{error?.message ?? 'Something went wrong'}</p>
+      {onRetry && (
+        <Button size="sm" onClick={onRetry}>
+          Retry
+        </Button>
+      )}
+    </div>
+  )
+}
+
+export function InlineError({ error }: { error: Error | null }) {
+  if (!error) return null
+  return <p className="mt-2 text-xs text-danger">{error.message}</p>
+}

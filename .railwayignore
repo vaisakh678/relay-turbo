@@ -1,0 +1,19 @@
+# `railway up` uploads the repo root; only apps/api + packages are needed.
+apps/web
+apps/landing
+
+# Local-only / generated
+.git
+.github
+.turbo
+node_modules
+**/node_modules
+**/dist
+**/.next
+**/out
+**/.turbo
+**/.env
+**/.env.*
+.DS_Store
+**/.DS_Store
+*.log

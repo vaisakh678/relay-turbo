@@ -1,0 +1,118 @@
+import db, { appSchema, requestLogSchema, type NewRequestLogRow, type RequestLogRow } from "@repo/db";
+import type { AppStatsDTO, LogDTO, TimeseriesPointDTO } from "@repo/dto";
+import { and, count, desc, eq, gte, inArray, isNull, lt, sql } from "drizzle-orm";
+
+import type { LogListQuery } from "../lib/validators";
+import type { CursorPagedResponse } from "../lib/types";
+
+
+function logToDTO(row: RequestLogRow): LogDTO {
+  const { costMicros, ...rest } = row;
+  return { ...rest, cost: costMicros / 1_000_000, createdAt: row.createdAt.toISOString() };
+}
+
+export async function insertLog(log: NewRequestLogRow): Promise<void> {
+  await db.insert(requestLogSchema).values(log);
+}
+
+/**
+ * Newest first. IDs are UUIDv7 (time-ordered), so the cursor is simply the
+ * last ID seen and "older than cursor" is `id < cursor`.
+ */
+export async function listLogs(query: LogListQuery): Promise<CursorPagedResponse<LogDTO>> {
+  const { appId, status, cursor, limit } = query;
+  const conditions = [
+    appId ? eq(requestLogSchema.appId, appId) : undefined,
+    status ? eq(requestLogSchema.status, status) : undefined,
+    cursor ? lt(requestLogSchema.id, cursor) : undefined,
+  ].filter((c) => c !== undefined);
+
+  const rows = await db
+    .select()
+    .from(requestLogSchema)
+    .where(conditions.length ? and(...conditions) : undefined)
+    .orderBy(desc(requestLogSchema.id))
+    .limit(limit + 1);
+
+  const hasMore = rows.length > limit;
+  const items = rows.slice(0, limit).map(logToDTO);
+  return { items, nextCursor: hasMore ? (items[items.length - 1]?.id ?? null) : null };
+}
+
+/**
+ * Requests that count toward a user's daily limit: completed or cancelled
+ * streams (both consumed tokens). Rejected and failed requests don't, so a
+ * provider outage never eats a user's quota.
+ */
+export async function countRequestsSince(appId: string, externalUserId: string, since: Date): Promise<number> {
+  const [row] = await db
+    .select({ n: count() })
+    .from(requestLogSchema)
+    .where(
+      and(
+        eq(requestLogSchema.appId, appId),
+        eq(requestLogSchema.externalUserId, externalUserId),
+        gte(requestLogSchema.createdAt, since),
+        inArray(requestLogSchema.status, ["ok", "aborted"]),
+      ),
+    );
+  return row?.n ?? 0;
+}
+
+/** Per-app totals over the last `hours` hours, for the dashboard overview. */
+export async function getStats(hours = 24): Promise<AppStatsDTO[]> {
+  const since = new Date(Date.now() - hours * 3_600_000);
+  const rows = await db
+    .select({
+      appId: appSchema.id,
+      requests: sql<number>`count(${requestLogSchema.id})::int`,
+      tokens: sql<number>`coalesce(sum(${requestLogSchema.inputTokens} + ${requestLogSchema.outputTokens}), 0)::bigint`,
+      costMicros: sql<number>`coalesce(sum(${requestLogSchema.costMicros}), 0)::bigint`,
+      errors: sql<number>`count(*) filter (where ${requestLogSchema.status} = 'error')::int`,
+      p50TtftMs: sql<number | null>`percentile_cont(0.5) within group (order by ${requestLogSchema.ttftMs})`,
+    })
+    .from(appSchema)
+    .leftJoin(
+      requestLogSchema,
+      and(eq(requestLogSchema.appId, appSchema.id), gte(requestLogSchema.createdAt, since)),
+    )
+    .where(isNull(appSchema.deletedAt))
+    .groupBy(appSchema.id);
+
+  return rows.map((r) => {
+    const requests = Number(r.requests);
+    return {
+      appId: r.appId,
+      requests,
+      tokens: Number(r.tokens),
+      cost: Number(r.costMicros) / 1_000_000,
+      errorRate: requests ? Number(r.errors) / requests : 0,
+      p50TtftMs: r.p50TtftMs === null ? null : Math.round(Number(r.p50TtftMs)),
+    };
+  });
+}
+
+/** Requests per hour per app over the last `hours` hours, oldest first, gaps filled with 0. */
+export async function getTimeseries(hours = 24): Promise<TimeseriesPointDTO[]> {
+  const now = new Date();
+  const end = new Date(Math.floor(now.getTime() / 3_600_000) * 3_600_000);
+  const start = new Date(end.getTime() - (hours - 1) * 3_600_000);
+
+  const rows = await db
+    .select({
+      hour: sql<string>`date_trunc('hour', ${requestLogSchema.createdAt}, 'UTC')`,
+      appId: requestLogSchema.appId,
+      n: sql<number>`count(*)::int`,
+    })
+    .from(requestLogSchema)
+    .where(gte(requestLogSchema.createdAt, start))
+    .groupBy(sql`1`, requestLogSchema.appId);
+
+  const buckets = new Map<number, Record<string, number>>();
+  for (let t = start.getTime(); t <= end.getTime(); t += 3_600_000) buckets.set(t, {});
+  for (const r of rows) {
+    const bucket = buckets.get(new Date(r.hour).getTime());
+    if (bucket) bucket[r.appId] = Number(r.n);
+  }
+  return [...buckets].map(([t, byApp]) => ({ hour: new Date(t).toISOString(), byApp }));
+}

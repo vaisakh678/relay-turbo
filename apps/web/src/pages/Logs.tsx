@@ -1,34 +1,32 @@
+import type { AppDTO, LogDTO, RequestStatus } from '@repo/dto'
 import { X } from 'lucide-react'
 import { useState } from 'react'
-import { Badge, Card, Empty, PageHeader, Select } from '../components/ui'
-import { useStore } from '../data/store'
-import type { LogEntry, LogStatus } from '../data/types'
+import { useApps, useLogs } from '../api/hooks'
+import { Badge, Button, Card, Empty, Loading, PageHeader, QueryError, Select } from '../components/ui'
 import { cn } from '../lib/cn'
 import { ms, timeAgo, usd } from '../lib/format'
 
-const statusTone: Record<LogStatus, 'success' | 'danger' | 'warn' | 'neutral'> = {
+const statusTone: Record<RequestStatus, 'success' | 'danger' | 'warn' | 'neutral'> = {
   ok: 'success',
   error: 'danger',
   rate_limited: 'warn',
   aborted: 'neutral',
 }
 
-function Detail({ log, onClose }: { log: LogEntry; onClose: () => void }) {
-  const { apps } = useStore()
-  const app = apps.find((a) => a.id === log.appId)
+function Detail({ log, app, onClose }: { log: LogDTO; app?: AppDTO; onClose: () => void }) {
   const rows: [string, string][] = [
     ['Request', log.id],
-    ['App', `${app?.emoji} ${app?.name}`],
-    ['User', log.userId],
+    ['App', app ? `${app.emoji} ${app.name}` : 'Deleted app'],
+    ['User', log.externalUserId],
     ['Plan', log.plan],
     ['Model', log.model],
     ['Prompt', `v${log.promptVersion}`],
     ['Input tokens', String(log.inputTokens)],
     ['Output tokens', String(log.outputTokens)],
-    ['Time to first token', log.ttftMs ? ms(log.ttftMs) : '–'],
+    ['Time to first token', log.ttftMs === null ? '–' : ms(log.ttftMs)],
     ['Duration', ms(log.durationMs)],
     ['Cost', usd(log.cost)],
-    ['Time', new Date(log.at).toLocaleString()],
+    ['Time', new Date(log.createdAt).toLocaleString()],
   ]
   return (
     <div className="fixed inset-0 z-50 bg-black/50" onClick={onClose}>
@@ -50,9 +48,9 @@ function Detail({ log, onClose }: { log: LogEntry; onClose: () => void }) {
             </div>
           ))}
         </dl>
-        {log.status === 'error' && (
+        {log.error && (
           <pre className="mt-4 whitespace-pre-wrap rounded-lg border border-danger/30 bg-danger/5 p-3 font-mono text-[11px] text-danger">
-            upstream 529 overloaded_error: provider is temporarily overloaded
+            {log.error}
           </pre>
         )}
         {log.status === 'rate_limited' && (
@@ -66,12 +64,13 @@ function Detail({ log, onClose }: { log: LogEntry; onClose: () => void }) {
 }
 
 export function Logs() {
-  const { apps, logs } = useStore()
-  const [appId, setAppId] = useState('all')
-  const [status, setStatus] = useState<'all' | LogStatus>('all')
-  const [selected, setSelected] = useState<LogEntry | null>(null)
-
-  const filtered = logs.filter((l) => (appId === 'all' || l.appId === appId) && (status === 'all' || l.status === status))
+  const apps = useApps()
+  const [appId, setAppId] = useState('')
+  const [status, setStatus] = useState<'' | RequestStatus>('')
+  const [selected, setSelected] = useState<LogDTO | null>(null)
+  const logs = useLogs({ appId: appId || undefined, status: status || undefined })
+  const items = logs.data?.pages.flatMap((p) => p.items) ?? []
+  const appOf = (id: string) => apps.data?.find((a) => a.id === id)
 
   return (
     <>
@@ -79,71 +78,85 @@ export function Logs() {
 
       <div className="mb-4 flex flex-wrap gap-2">
         <Select value={appId} onChange={(e) => setAppId(e.target.value)} className="w-44">
-          <option value="all">All apps</option>
-          {apps.map((a) => (
+          <option value="">All apps</option>
+          {apps.data?.map((a) => (
             <option key={a.id} value={a.id}>
               {a.emoji} {a.name}
             </option>
           ))}
         </Select>
-        <Select value={status} onChange={(e) => setStatus(e.target.value as 'all' | LogStatus)} className="w-40">
-          <option value="all">All statuses</option>
+        <Select value={status} onChange={(e) => setStatus(e.target.value as '' | RequestStatus)} className="w-40">
+          <option value="">All statuses</option>
           <option value="ok">ok</option>
           <option value="error">error</option>
           <option value="rate_limited">rate limited</option>
           <option value="aborted">aborted</option>
         </Select>
-        <span className="ml-auto self-center text-xs text-faint">{filtered.length} requests</span>
+        <Button variant="ghost" onClick={() => logs.refetch()} disabled={logs.isFetching}>
+          {logs.isFetching ? 'Refreshing…' : 'Refresh'}
+        </Button>
       </div>
 
       <Card className="overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="text-left text-xs text-faint">
-                <th className="px-5 py-2.5 font-normal">Status</th>
-                <th className="px-3 py-2.5 font-normal">App</th>
-                <th className="px-3 py-2.5 font-normal">User</th>
-                <th className="hidden px-3 py-2.5 font-normal md:table-cell">Model</th>
-                <th className="px-3 py-2.5 text-right font-normal">Tokens</th>
-                <th className="hidden px-3 py-2.5 text-right font-normal sm:table-cell">TTFT</th>
-                <th className="px-3 py-2.5 text-right font-normal">Cost</th>
-                <th className="px-5 py-2.5 text-right font-normal">Time</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filtered.map((l) => {
-                const app = apps.find((a) => a.id === l.appId)
-                return (
-                  <tr
-                    key={l.id}
-                    onClick={() => setSelected(l)}
-                    className={cn('cursor-pointer border-t border-line hover:bg-panel-2/50', selected?.id === l.id && 'bg-panel-2/50')}
-                  >
-                    <td className="px-5 py-2.5">
-                      <Badge tone={statusTone[l.status]}>{l.status.replace('_', ' ')}</Badge>
-                    </td>
-                    <td className="whitespace-nowrap px-3 py-2.5">
-                      {app?.emoji} {app?.name}
-                    </td>
-                    <td className="px-3 py-2.5 font-mono text-xs text-muted">
-                      {l.userId} <span className="text-faint">· {l.plan}</span>
-                    </td>
-                    <td className="hidden px-3 py-2.5 font-mono text-xs text-muted md:table-cell">{l.model}</td>
-                    <td className="px-3 py-2.5 text-right tabular-nums text-muted">{(l.inputTokens + l.outputTokens).toLocaleString()}</td>
-                    <td className="hidden px-3 py-2.5 text-right tabular-nums text-muted sm:table-cell">{l.ttftMs ? ms(l.ttftMs) : '–'}</td>
-                    <td className="px-3 py-2.5 text-right tabular-nums text-muted">{usd(l.cost)}</td>
-                    <td className="whitespace-nowrap px-5 py-2.5 text-right text-xs text-faint">{timeAgo(l.at)}</td>
-                  </tr>
-                )
-              })}
-            </tbody>
-          </table>
-        </div>
-        {filtered.length === 0 && <Empty>No requests match these filters.</Empty>}
+        {logs.isPending ? (
+          <Loading />
+        ) : logs.isError ? (
+          <QueryError error={logs.error} onRetry={() => logs.refetch()} />
+        ) : items.length === 0 ? (
+          <Empty>No requests yet{appId || status ? ' for these filters' : ''}. Send one from the Playground.</Empty>
+        ) : (
+          <div className={cn('overflow-x-auto transition-opacity', logs.isPlaceholderData && 'opacity-50')}>
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-left text-xs text-faint">
+                  <th className="px-5 py-2.5 font-normal">Status</th>
+                  <th className="px-3 py-2.5 font-normal">App</th>
+                  <th className="px-3 py-2.5 font-normal">User</th>
+                  <th className="hidden px-3 py-2.5 font-normal md:table-cell">Model</th>
+                  <th className="px-3 py-2.5 text-right font-normal">Tokens</th>
+                  <th className="hidden px-3 py-2.5 text-right font-normal sm:table-cell">TTFT</th>
+                  <th className="px-3 py-2.5 text-right font-normal">Cost</th>
+                  <th className="px-5 py-2.5 text-right font-normal">Time</th>
+                </tr>
+              </thead>
+              <tbody>
+                {items.map((l) => {
+                  const app = appOf(l.appId)
+                  return (
+                    <tr
+                      key={l.id}
+                      onClick={() => setSelected(l)}
+                      className={cn('cursor-pointer border-t border-line hover:bg-panel-2/50', selected?.id === l.id && 'bg-panel-2/50')}
+                    >
+                      <td className="px-5 py-2.5">
+                        <Badge tone={statusTone[l.status]}>{l.status.replace('_', ' ')}</Badge>
+                      </td>
+                      <td className="whitespace-nowrap px-3 py-2.5">{app ? `${app.emoji} ${app.name}` : '–'}</td>
+                      <td className="px-3 py-2.5 font-mono text-xs text-muted">
+                        {l.externalUserId} <span className="text-faint">· {l.plan}</span>
+                      </td>
+                      <td className="hidden px-3 py-2.5 font-mono text-xs text-muted md:table-cell">{l.model}</td>
+                      <td className="px-3 py-2.5 text-right tabular-nums text-muted">{(l.inputTokens + l.outputTokens).toLocaleString()}</td>
+                      <td className="hidden px-3 py-2.5 text-right tabular-nums text-muted sm:table-cell">{l.ttftMs === null ? '–' : ms(l.ttftMs)}</td>
+                      <td className="px-3 py-2.5 text-right tabular-nums text-muted">{usd(l.cost)}</td>
+                      <td className="whitespace-nowrap px-5 py-2.5 text-right text-xs text-faint">{timeAgo(l.createdAt)}</td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+        {logs.hasNextPage && (
+          <div className="border-t border-line p-3 text-center">
+            <Button size="sm" onClick={() => logs.fetchNextPage()} disabled={logs.isFetchingNextPage}>
+              {logs.isFetchingNextPage ? 'Loading…' : 'Load more'}
+            </Button>
+          </div>
+        )}
       </Card>
 
-      {selected && <Detail log={selected} onClose={() => setSelected(null)} />}
+      {selected && <Detail log={selected} app={appOf(selected.appId)} onClose={() => setSelected(null)} />}
     </>
   )
 }
