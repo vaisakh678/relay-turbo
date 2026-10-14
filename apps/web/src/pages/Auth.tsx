@@ -45,7 +45,7 @@ const DEMO = [
   { app: '💨 Puff Logger', text: 'Three days under ten puffs is real progress. Try a five-minute walk before the next craving.' },
 ]
 
-function StreamShowcase() {
+function StreamShowcase({ showSdks }: { showSdks: boolean }) {
   const [i, setI] = useState(0)
   const [n, setN] = useState(0)
   const [fading, setFading] = useState(false)
@@ -114,7 +114,46 @@ function StreamShowcase() {
             <span className="ml-auto">prompt v3</span>
           </div>
         </div>
+
+        {showSdks && <SdkRow />}
       </div>
+    </div>
+  )
+}
+
+const SDKS = [
+  { name: 'TypeScript', snippet: 'for await (const e of relay.stream(chat))' },
+  { name: 'Swift', snippet: 'for try await e in relay.stream(chat)' },
+  { name: 'Kotlin', snippet: 'relay.stream(chat).collect { … }', soon: true },
+]
+
+function SdkRow() {
+  const [active, setActive] = useState(0)
+  return (
+    <div className="mt-6">
+      <div className="flex items-center gap-3">
+        <span className="text-xs font-medium text-muted">Drop-in SDKs</span>
+        <span className="h-px flex-1 bg-line" />
+      </div>
+      <div className="mt-3 flex flex-wrap gap-1.5">
+        {SDKS.map((sdk, k) => (
+          <button
+            key={sdk.name}
+            type="button"
+            onClick={() => setActive(k)}
+            className={cn(
+              'flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs transition-colors',
+              active === k ? 'border-accent/40 bg-accent/10 text-fg' : 'border-line-strong text-muted hover:text-fg',
+            )}
+          >
+            {sdk.name}
+            {sdk.soon && <span className="text-[10px] text-faint">soon</span>}
+          </button>
+        ))}
+      </div>
+      <code className="mt-2.5 block truncate rounded-lg border border-line bg-bg px-3 py-2 font-mono text-[11px] text-muted">
+        {SDKS[active].snippet}
+      </code>
     </div>
   )
 }
@@ -258,7 +297,7 @@ function AuthPage({ mode }: { mode: Mode }) {
           </p>
         )}
       </div>
-      <StreamShowcase />
+      <StreamShowcase showSdks={signup} />
     </div>
   )
 }
