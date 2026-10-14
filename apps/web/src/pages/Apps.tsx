@@ -4,16 +4,15 @@ import { useState } from 'react'
 import { Link, useNavigate } from 'react-router'
 import { useApps, useCreateApp, useStats } from '../api/hooks'
 import { Badge, Button, Card, Field, InlineError, Input, Loading, Modal, PageHeader, QueryError, Select, StatusDot } from '../components/ui'
+import { APP_EMOJIS } from '../lib/emojis'
 import { compact, usd } from '../lib/format'
 import { MODELS } from '../lib/models'
-
-const EMOJIS = ['✨', '🤖', '📚', '🎧', '🧠', '🍳', '🪴', '💬', '🎮', '🧘']
 
 function NewAppModal({ onClose }: { onClose: () => void }) {
   const createApp = useCreateApp()
   const navigate = useNavigate()
   const [name, setName] = useState('')
-  const [emoji, setEmoji] = useState(EMOJIS[0]!)
+  const [emoji, setEmoji] = useState(APP_EMOJIS[0]!)
   const [provider, setProvider] = useState<Provider>('anthropic')
   const [model, setModel] = useState(MODELS.anthropic[1]!)
 
@@ -40,7 +39,7 @@ function NewAppModal({ onClose }: { onClose: () => void }) {
         </Field>
         <Field label="Icon">
           <div className="flex flex-wrap gap-1.5">
-            {EMOJIS.map((e) => (
+            {APP_EMOJIS.map((e) => (
               <button
                 type="button"
                 key={e}
