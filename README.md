@@ -12,3 +12,8 @@ A streaming AI gateway for multiple apps. Your app backends (e.g. AWS Lambda) ha
 pnpm install
 pnpm dev
 ```
+
+## License
+
+- Gateway and dashboard (`apps/`): [AGPL-3.0](LICENSE). Free to self-host; if you run a modified version as a service, you must publish your changes.
+- SDKs (`packages/`): [MIT](packages/LICENSE), so you can embed them in any app, open source or not.
