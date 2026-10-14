@@ -1,5 +1,5 @@
-import type { AppDetailDTO, PlanLimitDTO, Provider } from '@repo/dto'
-import { ArrowLeft, Eye, EyeOff, FlaskConical, History, Pause, Play, RefreshCw, RotateCcw, Save, Trash2, Upload } from 'lucide-react'
+import type { AppDetailDTO, PlanLimitDTO, Provider, TestTokenDTO } from '@repo/dto'
+import { ArrowLeft, Eye, EyeOff, FlaskConical, History, KeyRound, Pause, Play, Plus, RefreshCw, RotateCcw, Save, Trash2, Upload } from 'lucide-react'
 import { useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router'
 import { API_URL, ApiError } from '../api/client'
@@ -7,11 +7,14 @@ import {
   fetchSigningSecret,
   useActivateVersion,
   useApp,
+  useCreateTestToken,
   useDeleteApp,
   useProviderKeys,
   usePublishPrompt,
   useReplaceLimits,
+  useRevokeTestToken,
   useRotateSecret,
+  useTestTokens,
   useUpdateApp,
 } from '../api/hooks'
 import {
@@ -282,6 +285,185 @@ function LimitsTab({ app }: { app: AppDetailDTO }) {
   )
 }
 
+const TOKEN_TONE: Record<TestTokenDTO['status'], 'success' | 'neutral' | 'danger'> = {
+  active: 'success',
+  expired: 'neutral',
+  revoked: 'danger',
+}
+
+function parseVars(text: string): Record<string, string> | Error {
+  if (!text.trim()) return {}
+  try {
+    const value: unknown = JSON.parse(text)
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) return new Error('Variables must be a JSON object')
+    if (!Object.values(value).every((v) => typeof v === 'string')) return new Error('Variable values must be strings')
+    return value as Record<string, string>
+  } catch {
+    return new Error('Variables must be valid JSON')
+  }
+}
+
+function TestTokensCard({ app }: { app: AppDetailDTO }) {
+  const update = useUpdateApp(app.id)
+  const tokens = useTestTokens(app.id)
+  const create = useCreateTestToken(app.id)
+  const revoke = useRevokeTestToken(app.id)
+  const [creating, setCreating] = useState(false)
+  const [label, setLabel] = useState('')
+  const [user, setUser] = useState('test_user_1')
+  const [plan, setPlan] = useState(app.limits[0]?.plan ?? '')
+  const [expiresIn, setExpiresIn] = useState<'1h' | '1d' | '7d'>('1d')
+  const [varsText, setVarsText] = useState('')
+  const [created, setCreated] = useState<string | null>(null)
+  const parsedVars = parseVars(varsText)
+  const promptVars = variablesIn(app.prompts.find((p) => p.version === app.activePromptVersion)?.content ?? '')
+
+  return (
+    <Card>
+      <CardHeader
+        title={
+          <span className="flex items-center gap-2">
+            <KeyRound className="size-4 text-muted" /> Test tokens
+          </span>
+        }
+        description="Signed by Relay with this app's secret, so you can call the API without your backend. Max 7 days, revocable."
+        actions={
+          <label className="flex shrink-0 cursor-pointer items-center gap-2 text-xs text-muted">
+            <input
+              type="checkbox"
+              checked={app.allowTestTokens}
+              onChange={(e) => update.mutate({ allowTestTokens: e.target.checked })}
+              className="size-4 accent-accent"
+            />
+            Allow
+          </label>
+        }
+      />
+      <div className="space-y-4 p-5">
+        {!app.allowTestTokens && (
+          <p className="rounded-lg border border-line-strong bg-panel-2 px-3 py-2 text-xs text-muted">
+            Test tokens are off for this app, so existing ones are rejected. Turn this off before launch.
+          </p>
+        )}
+
+        {created && (
+          <div className="space-y-2 rounded-lg border border-accent/30 bg-accent/5 p-3">
+            <p className="text-xs font-medium text-accent">Copy it now. Relay doesn't store it, so it won't be shown again.</p>
+            <div className="flex items-center gap-1 rounded-md border border-line-strong bg-bg px-2 py-1.5">
+              <code className="flex-1 truncate font-mono text-[11px]">{created}</code>
+              <CopyButton value={created} />
+            </div>
+            <Button size="sm" variant="ghost" onClick={() => setCreated(null)}>
+              Done
+            </Button>
+          </div>
+        )}
+
+        {creating ? (
+          <form
+            className="space-y-3 rounded-lg border border-line p-4"
+            onSubmit={(e) => {
+              e.preventDefault()
+              if (parsedVars instanceof Error) return
+              create.mutate(
+                { label: label.trim() || `${user} · ${plan}`, user: user.trim(), plan, vars: parsedVars, expiresIn },
+                {
+                  onSuccess: ({ token }) => {
+                    setCreated(token)
+                    setCreating(false)
+                    setLabel('')
+                  },
+                },
+              )
+            }}
+          >
+            <div className="grid gap-3 sm:grid-cols-2">
+              <Field label="Label">
+                <Input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="e.g. iOS simulator" />
+              </Field>
+              <Field label="User ID" hint="Passed as the token's subject">
+                <Input value={user} onChange={(e) => setUser(e.target.value)} required className="font-mono text-xs" />
+              </Field>
+              <Field label="Plan">
+                <Select value={plan} onChange={(e) => setPlan(e.target.value)}>
+                  {app.limits.map((l) => (
+                    <option key={l.plan}>{l.plan}</option>
+                  ))}
+                </Select>
+              </Field>
+              <Field label="Expires in">
+                <Select value={expiresIn} onChange={(e) => setExpiresIn(e.target.value as typeof expiresIn)}>
+                  <option value="1h">1 hour</option>
+                  <option value="1d">1 day</option>
+                  <option value="7d">7 days</option>
+                </Select>
+              </Field>
+            </div>
+            <Field
+              label="Variables (JSON, optional)"
+              hint={promptVars.length ? `Live prompt uses: ${promptVars.map((v) => `{{${v}}}`).join(', ')}` : undefined}
+            >
+              <Textarea
+                value={varsText}
+                onChange={(e) => setVarsText(e.target.value)}
+                rows={3}
+                spellCheck={false}
+                placeholder={promptVars.length ? JSON.stringify(Object.fromEntries(promptVars.map((v) => [v, '…']))) : '{}'}
+                className="font-mono text-xs"
+              />
+            </Field>
+            {parsedVars instanceof Error && <p className="text-xs text-danger">{parsedVars.message}</p>}
+            <InlineError error={create.error} />
+            <div className="flex justify-end gap-2">
+              <Button type="button" variant="ghost" onClick={() => setCreating(false)}>
+                Cancel
+              </Button>
+              <Button type="submit" variant="primary" disabled={!user.trim() || !plan || parsedVars instanceof Error || create.isPending}>
+                {create.isPending ? 'Creating…' : 'Create token'}
+              </Button>
+            </div>
+          </form>
+        ) : (
+          <Button size="sm" onClick={() => setCreating(true)} disabled={app.limits.length === 0}>
+            <Plus className="size-3.5" /> New test token
+          </Button>
+        )}
+
+        {tokens.isPending ? (
+          <Loading />
+        ) : tokens.isError ? (
+          <QueryError error={tokens.error} onRetry={() => tokens.refetch()} />
+        ) : (
+          tokens.data.length > 0 && (
+            <ul className="divide-y divide-line rounded-lg border border-line">
+              {tokens.data.map((t) => (
+                <li key={t.id} className="flex items-center gap-3 px-3 py-2.5 text-sm">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2">
+                      <span className="truncate">{t.label}</span>
+                      <Badge tone={TOKEN_TONE[t.status]}>{t.status}</Badge>
+                    </div>
+                    <div className="mt-0.5 truncate font-mono text-[11px] text-faint">
+                      {t.user} · {t.plan} · {t.status === 'active' ? `expires ${new Date(t.expiresAt).toLocaleString()}` : `created ${timeAgo(t.createdAt)}`}
+                      {t.lastUsedAt && ` · used ${timeAgo(t.lastUsedAt)}`}
+                    </div>
+                  </div>
+                  {t.status === 'active' && (
+                    <Button size="sm" variant="ghost" disabled={revoke.isPending} onClick={() => revoke.mutate(t.id)}>
+                      Revoke
+                    </Button>
+                  )}
+                </li>
+              ))}
+            </ul>
+          )
+        )}
+        <InlineError error={update.error ?? revoke.error} />
+      </div>
+    </Card>
+  )
+}
+
 function IntegrationTab({ app }: { app: AppDetailDTO }) {
   const update = useUpdateApp(app.id)
   const rotate = useRotateSecret(app.id)
@@ -301,13 +483,23 @@ function IntegrationTab({ app }: { app: AppDetailDTO }) {
   }
 
   const curl = `curl -N ${API_URL}/chat \\
+  -H 'Authorization: Bearer <test token>' \\
   -H 'Content-Type: application/json' \\
-  -d '{
-    "app": "${app.slug}",
-    "user": "usr_123",
-    "plan": "${app.limits[0]?.plan ?? 'free'}",
-    "messages": [{ "role": "user", "content": "Hello!" }]
-  }'`
+  -d '{ "messages": [{ "role": "user", "content": "Hello!" }] }'`
+
+  const mintToken = `// Your Lambda: mint a token for the signed-in user (npm i jose)
+import { SignJWT } from 'jose'
+
+const secret = new TextEncoder().encode(process.env.RELAY_SIGNING_SECRET)
+
+export async function relayToken(user: { id: string; plan: string }) {
+  return new SignJWT({ app: '${app.slug}', plan: user.plan, vars: {} })
+    .setProtectedHeader({ alg: 'HS256' })
+    .setSubject(user.id)
+    .setIssuedAt()
+    .setExpirationTime('5m') // live tokens may live at most 24h
+    .sign(secret)
+}`
 
   const webhookVerify = `// Your Lambda: verify Relay's completion webhook
 import { createHmac, timingSafeEqual } from 'node:crypto'
@@ -321,14 +513,14 @@ export function verifyRelayWebhook(body: string, headers: Record<string, string>
   const sig = headers['x-relay-signature'] ?? ''
   if (sig.length !== expected.length || !timingSafeEqual(Buffer.from(sig), Buffer.from(expected)))
     throw new Error('bad signature')
-  return JSON.parse(body) // { id, app, user, plan, status, message, usage, ... }
+  return JSON.parse(body) // { id, app, user, plan, tokenKind, status, message, usage, ... }
 }`
 
   return (
     <div className="grid gap-6 lg:grid-cols-2">
       <div className="space-y-6">
         <Card>
-          <CardHeader title="Signing secret" description="Signs completion webhooks today; will sign user tokens once auth lands. Keep it server-side." />
+          <CardHeader title="Signing secret" description="Your backend signs chat tokens with it; Relay signs webhooks with it. Keep it server-side." />
           <div className="space-y-4 p-5">
             <div className="flex items-center gap-1 rounded-lg border border-line-strong bg-bg px-3 py-2">
               <code className="flex-1 truncate font-mono text-xs">{secret ?? app.signingSecretPreview}</code>
@@ -355,7 +547,7 @@ export function verifyRelayWebhook(body: string, headers: Record<string, string>
               >
                 <RefreshCw className="size-3.5" /> {confirmRotate ? 'Click again to rotate' : 'Rotate secret'}
               </Button>
-              {confirmRotate && <span className="text-xs text-warn">Your Lambda must be updated with the new secret.</span>}
+              {confirmRotate && <span className="text-xs text-warn">Breaks every existing token, including test tokens. Update your Lambda too.</span>}
             </div>
             <InlineError error={secretError ?? rotate.error} />
           </div>
@@ -387,12 +579,10 @@ export function verifyRelayWebhook(body: string, headers: Record<string, string>
         </Card>
       </div>
       <div className="space-y-4">
-        <div className="rounded-lg border border-warn/30 bg-warn/5 px-4 py-3 text-xs leading-relaxed text-warn">
-          Dev mode: the chat endpoint trusts <code>app</code>, <code>user</code> and <code>plan</code> from the request body. These move
-          into a token signed by your backend once auth is added.
-        </div>
+        <TestTokensCard app={app} />
         <CodeBlock lang="stream a reply · curl" code={curl} />
-        <CodeBlock lang="lambda · ts" code={webhookVerify} />
+        <CodeBlock lang="lambda · mint a token" code={mintToken} />
+        <CodeBlock lang="lambda · verify the webhook" code={webhookVerify} />
       </div>
     </div>
   )

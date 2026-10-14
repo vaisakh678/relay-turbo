@@ -2,19 +2,21 @@ import type {
   AppDetailDTO,
   AppDTO,
   AppStatsDTO,
+  CreatedTestTokenDTO,
   CursorPagedResponse,
   LogDTO,
   PlanLimitDTO,
+  PlaygroundTokenDTO,
   PromptVersionDTO,
   Provider,
   ProviderKeyDTO,
-  RequestStatus,
+  TestTokenDTO,
   TimeseriesPointDTO,
 } from '@repo/dto'
 import { keepPreviousData, useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { api } from './client'
-import { keys } from './keys'
+import { keys, type LogFilters } from './keys'
 
 // ---------- Apps ----------
 
@@ -36,7 +38,9 @@ export function useCreateApp() {
   })
 }
 
-export type UpdateAppInput = Partial<Pick<AppDTO, 'name' | 'emoji' | 'status' | 'provider' | 'model' | 'temperature' | 'webhookUrl'>>
+export type UpdateAppInput = Partial<
+  Pick<AppDTO, 'name' | 'emoji' | 'status' | 'provider' | 'model' | 'temperature' | 'webhookUrl' | 'allowTestTokens'>
+>
 
 /** Optimistic: the dashboard flips toggles/selects instantly and rolls back on error. */
 export function useUpdateApp(id: string) {
@@ -94,6 +98,40 @@ export function useRotateSecret(id: string) {
   })
 }
 
+// ---------- Tokens ----------
+
+export const useTestTokens = (appId: string) =>
+  useQuery({ queryKey: keys.testTokens(appId), queryFn: () => api<TestTokenDTO[]>(`/apps/${appId}/test-tokens`) })
+
+export type CreateTestTokenInput = {
+  label: string
+  user: string
+  plan: string
+  vars: Record<string, string>
+  expiresIn: '1h' | '1d' | '7d'
+}
+
+export function useCreateTestToken(appId: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (input: CreateTestTokenInput) =>
+      api<CreatedTestTokenDTO>(`/apps/${appId}/test-tokens`, { method: 'POST', json: input }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: keys.testTokens(appId) }),
+  })
+}
+
+export function useRevokeTestToken(appId: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (tokenId: string) => api<TestTokenDTO>(`/apps/${appId}/test-tokens/${tokenId}`, { method: 'DELETE' }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: keys.testTokens(appId) }),
+  })
+}
+
+/** Short-lived token for the Playground; minted per conversation settings, not cached by the query client. */
+export const fetchPlaygroundToken = (appId: string, input: { user: string; plan: string; vars: Record<string, string> }) =>
+  api<PlaygroundTokenDTO>(`/apps/${appId}/playground-token`, { method: 'POST', json: input })
+
 // ---------- Provider keys ----------
 
 export const useProviderKeys = () =>
@@ -118,13 +156,14 @@ export function useDeleteProviderKey() {
 
 // ---------- Logs & stats ----------
 
-export function useLogs(filters: { appId?: string; status?: RequestStatus } = {}, pageSize = 50) {
+export function useLogs(filters: LogFilters = {}, pageSize = 50) {
   return useInfiniteQuery({
     queryKey: keys.logs(filters),
     queryFn: ({ pageParam }) => {
       const params = new URLSearchParams({ limit: String(pageSize) })
       if (filters.appId) params.set('appId', filters.appId)
       if (filters.status) params.set('status', filters.status)
+      if (filters.tokenKind) params.set('tokenKind', filters.tokenKind)
       if (pageParam) params.set('cursor', pageParam)
       return api<CursorPagedResponse<LogDTO>>(`/logs?${params}`)
     },

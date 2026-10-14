@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import {
+  boolean,
   check,
   integer,
   pgTable,
@@ -32,6 +33,10 @@ export const appSchema = pgTable(
     // Where Relay POSTs the finished message + usage after each stream.
     webhookUrl: text("webhook_url"),
     signingSecret: text("signing_secret").notNull(),
+
+    // Kill switch for dashboard-issued test tokens. Off by default; turn it
+    // off before launch and every test token for the app stops working.
+    allowTestTokens: boolean("allow_test_tokens").notNull().default(false),
 
     // Version number of the prompt currently served (see prompt_versions).
     activePromptVersion: integer("active_prompt_version").notNull().default(1),

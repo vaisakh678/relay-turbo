@@ -8,8 +8,8 @@ import { logger } from "./lib/logger";
 import type { APIResponse } from "./lib/types";
 import appRoutes from "./routes";
 
-// TODO(auth): no auth yet — every /api/v1 route is open. Dashboard routes need
-// a session; /chat needs the app-signed token instead of body-asserted identity.
+// TODO(auth): dashboard routes (everything except /chat and /health) have no
+// auth yet. /chat is authenticated by app-signed bearer tokens.
 export function createApp() {
   const app = new Hono();
   app.use(honoLogger());

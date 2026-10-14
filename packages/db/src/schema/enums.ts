@@ -15,3 +15,9 @@ export const requestStatusEnum = pgEnum("request_status", [
   "rate_limited",
   "aborted",
 ]);
+
+// Which kind of token authorised a chat request.
+//   live       — minted by the app's own backend (real users)
+//   test       — a dashboard-issued test token (revocable, capped)
+//   playground — short-lived token minted by the dashboard Playground
+export const tokenKindEnum = pgEnum("token_kind", ["live", "test", "playground"]);

@@ -1,8 +1,9 @@
 import { bigint, index, integer, pgTable, text, uuid } from "drizzle-orm/pg-core";
 
 import { appSchema } from "./apps";
-import { providerEnum, requestStatusEnum } from "./enums";
+import { providerEnum, requestStatusEnum, tokenKindEnum } from "./enums";
 import { createdAt, id } from "./helpers";
+import { testTokenSchema } from "./test-tokens";
 
 // One row per stream through the gateway. Metadata only: message content is
 // never stored here (it goes to the app's webhook instead).
@@ -16,6 +17,9 @@ export const requestLogSchema = pgTable(
     // The app's own user ID, from the token's `sub` claim. Opaque to Relay.
     externalUserId: text("external_user_id").notNull(),
     plan: text("plan").notNull(),
+    tokenKind: tokenKindEnum("token_kind").notNull().default("live"),
+    // Set when a dashboard test token was used; kept null if the token is later deleted.
+    testTokenId: uuid("test_token_id").references(() => testTokenSchema.id, { onDelete: "set null" }),
 
     provider: providerEnum("provider").notNull(),
     model: text("model").notNull(),
@@ -40,6 +44,8 @@ export const requestLogSchema = pgTable(
     index("request_logs_app_user_created_idx").on(t.appId, t.externalUserId, t.createdAt),
     // Cross-app log listing (dashboard "All apps").
     index("request_logs_created_idx").on(t.createdAt),
+    // FK index (set-null on token delete) + per-token usage lookups.
+    index("request_logs_test_token_idx").on(t.testTokenId),
   ],
 );
 

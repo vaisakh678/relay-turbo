@@ -1,10 +1,12 @@
-import type { Provider, RequestStatus } from "./common";
+import type { Provider, RequestStatus, TokenKind } from "./common";
 
 export interface LogDTO {
   id: string;
   appId: string;
   externalUserId: string;
   plan: string;
+  tokenKind: TokenKind;
+  testTokenId: string | null;
   provider: Provider;
   model: string;
   promptVersion: number;
@@ -19,6 +21,7 @@ export interface LogDTO {
   createdAt: string;
 }
 
+/** Live traffic only (test and Playground requests excluded). */
 export interface AppStatsDTO {
   appId: string;
   requests: number;

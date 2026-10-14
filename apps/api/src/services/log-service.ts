@@ -20,10 +20,11 @@ export async function insertLog(log: NewRequestLogRow): Promise<void> {
  * last ID seen and "older than cursor" is `id < cursor`.
  */
 export async function listLogs(query: LogListQuery): Promise<CursorPagedResponse<LogDTO>> {
-  const { appId, status, cursor, limit } = query;
+  const { appId, status, tokenKind, cursor, limit } = query;
   const conditions = [
     appId ? eq(requestLogSchema.appId, appId) : undefined,
     status ? eq(requestLogSchema.status, status) : undefined,
+    tokenKind ? eq(requestLogSchema.tokenKind, tokenKind) : undefined,
     cursor ? lt(requestLogSchema.id, cursor) : undefined,
   ].filter((c) => c !== undefined);
 
@@ -37,6 +38,22 @@ export async function listLogs(query: LogListQuery): Promise<CursorPagedResponse
   const hasMore = rows.length > limit;
   const items = rows.slice(0, limit).map(logToDTO);
   return { items, nextCursor: hasMore ? (items[items.length - 1]?.id ?? null) : null };
+}
+
+/** Test-token requests for an app (all tokens combined) that count toward its daily test cap. */
+export async function countTestRequestsSince(appId: string, since: Date): Promise<number> {
+  const [row] = await db
+    .select({ n: count() })
+    .from(requestLogSchema)
+    .where(
+      and(
+        eq(requestLogSchema.appId, appId),
+        eq(requestLogSchema.tokenKind, "test"),
+        gte(requestLogSchema.createdAt, since),
+        inArray(requestLogSchema.status, ["ok", "aborted"]),
+      ),
+    );
+  return row?.n ?? 0;
 }
 
 /**
@@ -74,7 +91,12 @@ export async function getStats(hours = 24): Promise<AppStatsDTO[]> {
     .from(appSchema)
     .leftJoin(
       requestLogSchema,
-      and(eq(requestLogSchema.appId, appSchema.id), gte(requestLogSchema.createdAt, since)),
+      // Live traffic only: test and Playground requests would skew real numbers.
+      and(
+        eq(requestLogSchema.appId, appSchema.id),
+        gte(requestLogSchema.createdAt, since),
+        eq(requestLogSchema.tokenKind, "live"),
+      ),
     )
     .where(isNull(appSchema.deletedAt))
     .groupBy(appSchema.id);
@@ -105,7 +127,7 @@ export async function getTimeseries(hours = 24): Promise<TimeseriesPointDTO[]> {
       n: sql<number>`count(*)::int`,
     })
     .from(requestLogSchema)
-    .where(gte(requestLogSchema.createdAt, start))
+    .where(and(gte(requestLogSchema.createdAt, start), eq(requestLogSchema.tokenKind, "live")))
     .groupBy(sql`1`, requestLogSchema.appId);
 
   const buckets = new Map<number, Record<string, number>>();

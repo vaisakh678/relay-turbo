@@ -29,6 +29,7 @@ export const updateAppSchema = z
     model: z.string().min(1).max(100),
     temperature: z.number().min(0).max(2),
     webhookUrl: z.url().nullable(),
+    allowTestTokens: z.boolean(),
   })
   .partial()
   .refine((v) => Object.keys(v).length > 0, "Nothing to update");
@@ -63,18 +64,18 @@ export const providerParamSchema = z.object({ provider: providerSchema });
 export const logListQuerySchema = z.object({
   appId: z.uuid().optional(),
   status: z.enum(["ok", "error", "rate_limited", "aborted"]).optional(),
+  tokenKind: z.enum(["live", "test", "playground"]).optional(),
   cursor: z.uuid().optional(),
   limit: z.coerce.number().int().min(1).max(200).default(50),
 });
 export type LogListQuery = z.infer<typeof logListQuerySchema>;
 
-// TODO(auth): `app`, `user` and `plan` move into a token signed by the app's
-// backend. Until then the caller asserts them directly — dev only.
+const varsSchema = z.record(z.string().regex(/^\w+$/, "Variable names: letters, numbers, _"), z.string().max(20_000)).default({});
+
+// Identity (app, user, plan) and trusted vars come from the bearer token.
+// Body vars are untrusted client input; token vars win on conflict.
 export const chatRequestSchema = z.object({
-  app: slugSchema,
-  user: z.string().min(1).max(200),
-  plan: z.string().min(1).max(40),
-  vars: z.record(z.string(), z.string().max(20_000)).default({}),
+  vars: varsSchema,
   messages: z
     .array(
       z.object({
@@ -87,3 +88,21 @@ export const chatRequestSchema = z.object({
     .refine((ms) => ms[ms.length - 1]!.role === "user", "The last message must be from the user"),
 });
 export type ChatRequest = z.infer<typeof chatRequestSchema>;
+
+export const createTestTokenSchema = z.object({
+  label: z.string().trim().min(1).max(80),
+  user: z.string().trim().min(1).max(200),
+  plan: z.string().trim().min(1).max(40),
+  vars: varsSchema,
+  expiresIn: z.enum(["1h", "1d", "7d"]),
+});
+export type CreateTestTokenInput = z.infer<typeof createTestTokenSchema>;
+
+export const playgroundTokenSchema = z.object({
+  user: z.string().trim().min(1).max(200).default("playground"),
+  plan: z.string().trim().min(1).max(40),
+  vars: varsSchema,
+});
+export type PlaygroundTokenInput = z.infer<typeof playgroundTokenSchema>;
+
+export const tokenParamSchema = z.object({ id: z.uuid(), tokenId: z.uuid() });

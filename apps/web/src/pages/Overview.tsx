@@ -19,7 +19,7 @@ function RequestsChart({ apps, series }: { apps: AppDTO[]; series: TimeseriesPoi
     <Card>
       <CardHeader
         title="Requests"
-        description="Last 24 hours, stacked by app"
+        description="Live traffic, last 24 hours, stacked by app"
         actions={
           <div className="hidden flex-wrap justify-end gap-x-3 gap-y-1 sm:flex">
             {apps.map((a) => (
@@ -34,7 +34,7 @@ function RequestsChart({ apps, series }: { apps: AppDTO[]; series: TimeseriesPoi
       <div className="px-5 pb-4 pt-6">
         {totals.every((t) => t === 0) ? (
           <div className="flex h-48 items-center justify-center text-sm text-faint">
-            No requests in the last 24 hours. Try one in the Playground.
+            No live requests in the last 24 hours. Test and Playground traffic shows up in Logs.
           </div>
         ) : (
           <div className="relative flex h-48 items-end gap-[3px]" onMouseLeave={() => setHover(null)}>
@@ -159,7 +159,7 @@ export function Overview() {
 
   return (
     <>
-      <PageHeader title="Overview" description="Every AI stream across your apps, in one place." />
+      <PageHeader title="Overview" description="Live traffic across your apps. Test and Playground requests are excluded." />
 
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         <Stat label="Requests · 24h" value={compact(totals.requests)} sub={`${apps.data.filter((a) => a.status === 'live').length} live apps`} />

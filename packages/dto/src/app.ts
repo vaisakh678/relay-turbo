@@ -10,6 +10,8 @@ export interface AppDTO {
   model: string;
   temperature: number;
   webhookUrl: string | null;
+  /** Kill switch for dashboard-issued test tokens. */
+  allowTestTokens: boolean;
   activePromptVersion: number;
   /** Masked; fetch GET /apps/:id/secret for the real value. */
   signingSecretPreview: string;
@@ -40,4 +42,29 @@ export interface ProviderKeyDTO {
   configured: boolean;
   preview: string | null;
   updatedAt: string | null;
+}
+
+export interface TestTokenDTO {
+  /** Also the token's `jti`. */
+  id: string;
+  label: string;
+  user: string;
+  plan: string;
+  vars: Record<string, string>;
+  status: "active" | "expired" | "revoked";
+  expiresAt: string;
+  revokedAt: string | null;
+  lastUsedAt: string | null;
+  createdAt: string;
+}
+
+/** POST /apps/:id/test-tokens — the token string is only ever returned here. */
+export interface CreatedTestTokenDTO {
+  token: string;
+  testToken: TestTokenDTO;
+}
+
+export interface PlaygroundTokenDTO {
+  token: string;
+  expiresAt: string;
 }
