@@ -19,9 +19,14 @@ export async function insertLog(log: NewRequestLogRow): Promise<void> {
  * last ID seen and "older than cursor" is `id < cursor`. `total` counts every
  * row matching the filters (ignoring the cursor) for "1–50 of 1,234".
  */
-export async function listLogs(query: LogListQuery): Promise<LogPageDTO> {
+/** IDs of a workspace's apps (including deleted ones, so their history stays visible). */
+const workspaceAppIds = (workspaceId: string) =>
+  db.select({ id: appSchema.id }).from(appSchema).where(eq(appSchema.workspaceId, workspaceId));
+
+export async function listLogs(workspaceId: string, query: LogListQuery): Promise<LogPageDTO> {
   const { appId, status, tokenKind, cursor, limit } = query;
   const filters = [
+    inArray(requestLogSchema.appId, workspaceAppIds(workspaceId)),
     appId ? eq(requestLogSchema.appId, appId) : undefined,
     status ? eq(requestLogSchema.status, status) : undefined,
     tokenKind ? eq(requestLogSchema.tokenKind, tokenKind) : undefined,
@@ -83,7 +88,7 @@ export async function countRequestsSince(appId: string, externalUserId: string, 
 }
 
 /** Per-app totals over the last `hours` hours, for the dashboard overview. */
-export async function getStats(hours = 24): Promise<AppStatsDTO[]> {
+export async function getStats(workspaceId: string, hours = 24): Promise<AppStatsDTO[]> {
   const since = new Date(Date.now() - hours * 3_600_000);
   const rows = await db
     .select({
@@ -104,7 +109,7 @@ export async function getStats(hours = 24): Promise<AppStatsDTO[]> {
         eq(requestLogSchema.tokenKind, "live"),
       ),
     )
-    .where(isNull(appSchema.deletedAt))
+    .where(and(eq(appSchema.workspaceId, workspaceId), isNull(appSchema.deletedAt)))
     .groupBy(appSchema.id);
 
   return rows.map((r) => {
@@ -121,7 +126,7 @@ export async function getStats(hours = 24): Promise<AppStatsDTO[]> {
 }
 
 /** Requests per hour per app over the last `hours` hours, oldest first, gaps filled with 0. */
-export async function getTimeseries(hours = 24): Promise<TimeseriesPointDTO[]> {
+export async function getTimeseries(workspaceId: string, hours = 24): Promise<TimeseriesPointDTO[]> {
   const now = new Date();
   const end = new Date(Math.floor(now.getTime() / 3_600_000) * 3_600_000);
   const start = new Date(end.getTime() - (hours - 1) * 3_600_000);
@@ -133,7 +138,13 @@ export async function getTimeseries(hours = 24): Promise<TimeseriesPointDTO[]> {
       n: sql<number>`count(*)::int`,
     })
     .from(requestLogSchema)
-    .where(and(gte(requestLogSchema.createdAt, start), eq(requestLogSchema.tokenKind, "live")))
+    .where(
+      and(
+        inArray(requestLogSchema.appId, workspaceAppIds(workspaceId)),
+        gte(requestLogSchema.createdAt, start),
+        eq(requestLogSchema.tokenKind, "live"),
+      ),
+    )
     .groupBy(sql`1`, requestLogSchema.appId);
 
   const buckets = new Map<number, Record<string, number>>();

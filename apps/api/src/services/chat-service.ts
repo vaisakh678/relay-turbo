@@ -43,7 +43,7 @@ export async function prepareChat(auth: ChatAuth, body: ChatRequest): Promise<Pr
   const [prompt, limit, apiKey] = await Promise.all([
     getActivePrompt(app),
     getPlanLimit(app.id, plan),
-    getProviderKey(app.provider),
+    getProviderKey(app.workspaceId, app.provider),
   ]);
   if (!prompt) throw ServiceUnavailable(`App "${app.slug}" has no active prompt`);
   if (!limit) throw BadRequest(`Unknown plan "${plan}" for app "${app.slug}"`);

@@ -79,8 +79,8 @@ async function requirePlan(appId: string, plan: string) {
   if (!(await getPlanLimit(appId, plan))) throw BadRequest(`Unknown plan "${plan}" for this app`);
 }
 
-export async function listTestTokens(appId: string): Promise<TestTokenDTO[]> {
-  await requireApp(appId);
+export async function listTestTokens(workspaceId: string, appId: string): Promise<TestTokenDTO[]> {
+  await requireApp(workspaceId, appId);
   const rows = await db
     .select()
     .from(testTokenSchema)
@@ -90,8 +90,8 @@ export async function listTestTokens(appId: string): Promise<TestTokenDTO[]> {
 }
 
 /** Returns the token string exactly once; only its metadata is stored. */
-export async function createTestToken(appId: string, input: CreateTestTokenInput): Promise<{ token: string; testToken: TestTokenDTO }> {
-  const app = await requireApp(appId);
+export async function createTestToken(workspaceId: string, appId: string, input: CreateTestTokenInput): Promise<{ token: string; testToken: TestTokenDTO }> {
+  const app = await requireApp(workspaceId, appId);
   await requirePlan(app.id, input.plan);
 
   const [row] = await db
@@ -114,8 +114,8 @@ export async function createTestToken(appId: string, input: CreateTestTokenInput
   return { token, testToken: testTokenToDTO(row!) };
 }
 
-export async function revokeTestToken(appId: string, tokenId: string): Promise<TestTokenDTO> {
-  await requireApp(appId);
+export async function revokeTestToken(workspaceId: string, appId: string, tokenId: string): Promise<TestTokenDTO> {
+  await requireApp(workspaceId, appId);
   const [row] = await db
     .update(testTokenSchema)
     .set({ revokedAt: new Date() })
@@ -126,8 +126,8 @@ export async function revokeTestToken(appId: string, tokenId: string): Promise<T
 }
 
 /** 5-minute token for the dashboard Playground. Works even when test tokens are disabled. */
-export async function createPlaygroundToken(appId: string, input: PlaygroundTokenInput): Promise<{ token: string; expiresAt: string }> {
-  const app = await requireApp(appId);
+export async function createPlaygroundToken(workspaceId: string, appId: string, input: PlaygroundTokenInput): Promise<{ token: string; expiresAt: string }> {
+  const app = await requireApp(workspaceId, appId);
   await requirePlan(app.id, input.plan);
   const expiresAt = new Date(Date.now() + PLAYGROUND_TTL_MS);
   const token = await signToken(

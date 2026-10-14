@@ -1,9 +1,12 @@
 import { Activity, AppWindow, FlaskConical, KeyRound, LayoutDashboard, LogOut, Menu, X } from 'lucide-react'
+import { useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
-import { Link, NavLink, Outlet } from 'react-router'
+import { Navigate, NavLink, Outlet, useLocation, useNavigate } from 'react-router'
 import { API_URL } from '../api/client'
 import { useHealth } from '../api/hooks'
+import { authClient, type Session } from '../lib/auth-client'
 import { cn } from '../lib/cn'
+import { WorkspaceSwitcher } from './WorkspaceSwitcher'
 
 const nav = [
   { to: '/', label: 'Overview', icon: LayoutDashboard, end: true },
@@ -27,7 +30,7 @@ function Logo() {
 
 function Nav({ onNavigate }: { onNavigate?: () => void }) {
   return (
-    <nav className="mt-6 space-y-0.5">
+    <nav className="mt-4 space-y-0.5">
       {nav.map(({ to, label, icon: Icon, end }) => (
         <NavLink
           key={to}
@@ -63,32 +66,76 @@ function GatewayStatus() {
   )
 }
 
-function Footer() {
+function UserMenu({ user }: { user: Session['user'] }) {
+  const qc = useQueryClient()
+  const navigate = useNavigate()
+  const [signingOut, setSigningOut] = useState(false)
+  return (
+    <div className="flex items-center gap-2.5 border-t border-line px-1 pt-3">
+      {user.image ? (
+        <img src={user.image} alt="" referrerPolicy="no-referrer" className="size-8 shrink-0 rounded-full" />
+      ) : (
+        <div className="flex size-8 shrink-0 items-center justify-center rounded-full bg-accent/15 text-xs font-semibold text-accent">
+          {(user.name || user.email).charAt(0).toUpperCase()}
+        </div>
+      )}
+      <div className="min-w-0 flex-1">
+        <div className="truncate text-sm">{user.name || user.email.split('@')[0]}</div>
+        <div className="truncate text-[11px] text-faint">{user.email}</div>
+      </div>
+      <button
+        disabled={signingOut}
+        onClick={async () => {
+          setSigningOut(true)
+          await authClient.signOut()
+          qc.clear()
+          navigate('/login', { replace: true })
+        }}
+        className="rounded-md p-1.5 text-faint hover:bg-panel-2 hover:text-fg disabled:opacity-50"
+        aria-label="Sign out"
+        title="Sign out"
+      >
+        <LogOut className="size-4" />
+      </button>
+    </div>
+  )
+}
+
+function Footer({ user }: { user: Session['user'] }) {
   return (
     <div className="mt-auto space-y-3">
       <GatewayStatus />
-      <div className="flex items-center gap-2.5 border-t border-line px-1 pt-3">
-        <div className="flex size-8 shrink-0 items-center justify-center rounded-full bg-accent/15 text-xs font-semibold text-accent">V</div>
-        <div className="min-w-0 flex-1">
-          <div className="truncate text-sm">Vaisakh</div>
-          <div className="truncate text-[11px] text-faint">Cortex Lumora</div>
-        </div>
-        <Link to="/login" className="rounded-md p-1.5 text-faint hover:bg-panel-2 hover:text-fg" aria-label="Sign out" title="Sign out">
-          <LogOut className="size-4" />
-        </Link>
-      </div>
+      <UserMenu user={user} />
     </div>
   )
 }
 
 export function Layout() {
   const [open, setOpen] = useState(false)
+  const session = authClient.useSession()
+  const location = useLocation()
+
+  if (session.isPending) {
+    return (
+      <div className="flex min-h-full items-center justify-center">
+        <span className="size-5 animate-spin rounded-full border-2 border-line-strong border-t-accent" />
+      </div>
+    )
+  }
+  // Signed out (or session expired): send to login, then back here afterwards
+  if (!session.data) {
+    const next = location.pathname + location.search
+    return <Navigate to={next === '/' ? '/login' : `/login?next=${encodeURIComponent(next)}`} replace />
+  }
+  const user = session.data.user
+
   return (
     <div className="flex min-h-full">
       <aside className="sticky top-0 hidden h-screen w-60 shrink-0 flex-col border-r border-line bg-panel/60 p-4 md:flex">
         <Logo />
+        <WorkspaceSwitcher />
         <Nav />
-        <Footer />
+        <Footer user={user} />
       </aside>
 
       {open && (
@@ -103,8 +150,9 @@ export function Layout() {
                 <X className="size-5" />
               </button>
             </div>
+            <WorkspaceSwitcher />
             <Nav onNavigate={() => setOpen(false)} />
-            <Footer />
+            <Footer user={user} />
           </aside>
         </div>
       )}
