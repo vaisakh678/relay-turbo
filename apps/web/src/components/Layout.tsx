@@ -1,6 +1,6 @@
-import { Activity, AppWindow, FlaskConical, KeyRound, LayoutDashboard, Menu, X } from 'lucide-react'
+import { Activity, AppWindow, FlaskConical, KeyRound, LayoutDashboard, LogOut, Menu, X } from 'lucide-react'
 import { useState } from 'react'
-import { NavLink, Outlet } from 'react-router'
+import { Link, NavLink, Outlet } from 'react-router'
 import { cn } from '../lib/cn'
 
 const nav = [
@@ -49,12 +49,24 @@ function Nav({ onNavigate }: { onNavigate?: () => void }) {
 
 function Footer() {
   return (
-    <div className="mt-auto rounded-lg border border-line bg-panel-2/50 p-3 text-xs">
-      <div className="flex items-center gap-2 text-muted">
-        <span className="size-1.5 rounded-full bg-accent" />
-        Gateway healthy
+    <div className="mt-auto space-y-3">
+      <div className="rounded-lg border border-line bg-panel-2/50 p-3 text-xs">
+        <div className="flex items-center gap-2 text-muted">
+          <span className="size-1.5 rounded-full bg-accent" />
+          Gateway healthy
+        </div>
+        <div className="mt-1 font-mono text-[11px] text-faint">relay.cortexlumora.com</div>
       </div>
-      <div className="mt-1 font-mono text-[11px] text-faint">relay.cortexlumora.com</div>
+      <div className="flex items-center gap-2.5 border-t border-line px-1 pt-3">
+        <div className="flex size-8 shrink-0 items-center justify-center rounded-full bg-accent/15 text-xs font-semibold text-accent">V</div>
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-sm">Vaisakh</div>
+          <div className="truncate text-[11px] text-faint">Cortex Lumora</div>
+        </div>
+        <Link to="/login" className="rounded-md p-1.5 text-faint hover:bg-panel-2 hover:text-fg" aria-label="Sign out" title="Sign out">
+          <LogOut className="size-4" />
+        </Link>
+      </div>
     </div>
   )
 }

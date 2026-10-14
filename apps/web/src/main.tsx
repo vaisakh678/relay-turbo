@@ -6,6 +6,7 @@ import { StoreProvider } from './data/store'
 import './index.css'
 import { AppDetail } from './pages/AppDetail'
 import { Apps } from './pages/Apps'
+import { Login, Signup } from './pages/Auth'
 import { Logs } from './pages/Logs'
 import { NotFound } from './pages/NotFound'
 import { Overview } from './pages/Overview'
@@ -13,6 +14,8 @@ import { Playground } from './pages/Playground'
 import { Settings } from './pages/Settings'
 
 const router = createBrowserRouter([
+  { path: 'login', element: <Login /> },
+  { path: 'signup', element: <Signup /> },
   {
     element: <Layout />,
     children: [
