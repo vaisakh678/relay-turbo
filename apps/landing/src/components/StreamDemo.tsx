@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useTypewriter } from "@/hooks/useTypewriter";
 
 const DEMO = [
   {
@@ -20,32 +20,12 @@ const DEMO = [
   },
 ];
 
-// Looping fake token stream for the hero
-export function StreamDemo() {
-  const [i, setI] = useState(0);
-  const [n, setN] = useState(0);
-  const [fading, setFading] = useState(false);
-  const demo = DEMO[i];
-  const words = demo.text.split(" ");
-  const done = n >= words.length;
+const DEMO_TEXTS = DEMO.map((d) => d.text);
 
-  useEffect(() => {
-    let t: ReturnType<typeof setTimeout>;
-    if (fading) {
-      t = setTimeout(() => {
-        setI((i + 1) % DEMO.length);
-        setN(0);
-        setFading(false);
-      }, 350);
-    } else if (done) {
-      t = setTimeout(() => setFading(true), 2200);
-    } else {
-      const prev = DEMO[i].text.split(" ")[n - 1] ?? "";
-      const pause = /[.,?!]$/.test(prev) ? 180 : 0;
-      t = setTimeout(() => setN(n + 1), (n === 0 ? 500 : 45 + Math.random() * 55) + pause);
-    }
-    return () => clearTimeout(t);
-  }, [i, n, done, fading]);
+// Looping fake stream for the hero, typed out ChatGPT-style
+export function StreamDemo() {
+  const { index, text, done } = useTypewriter(DEMO_TEXTS);
+  const demo = DEMO[index]!;
 
   return (
     <div className="overflow-hidden rounded-xl border border-line-strong bg-panel shadow-2xl shadow-black/50">
@@ -55,16 +35,11 @@ export function StreamDemo() {
           <span className="size-2.5 rounded-full bg-line-strong" />
           <span className="size-2.5 rounded-full bg-line-strong" />
         </span>
-        <span className={`ml-2 text-muted transition-opacity duration-300 ${fading ? "opacity-0" : ""}`}>{demo.app}</span>
+        <span className="ml-2 text-muted">{demo.app}</span>
         <span className="ml-auto font-mono text-faint">text/event-stream</span>
       </div>
-      <div className={`min-h-36 p-5 text-[15px] leading-relaxed transition-opacity duration-300 ${fading ? "opacity-0" : ""}`}>
-        {words.slice(0, n).map((w, k) => (
-          <span key={`${i}-${k}`} className="token">
-            {k > 0 && " "}
-            {w}
-          </span>
-        ))}
+      <div className="min-h-36 whitespace-pre-wrap p-5 text-[15px] leading-relaxed">
+        {text}
         <span className={`caret ml-0.5 ${done ? "" : "caret-solid"}`} />
       </div>
       <div className="flex gap-4 border-t border-line px-4 py-2 font-mono text-[11px] text-faint">
@@ -72,7 +47,7 @@ export function StreamDemo() {
           <span className="size-1.5 rounded-full bg-accent" />
           {done ? "done" : "streaming"}
         </span>
-        <span>{n} tokens</span>
+        <span>{Math.ceil(text.length / 4)} tokens</span>
         <span className="ml-auto">prompt {demo.prompt}</span>
       </div>
     </div>
